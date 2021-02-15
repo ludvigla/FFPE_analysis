@@ -1,0 +1,80 @@
+---
+title: "all_samples_qc"
+author: "Ludvig Larsson"
+date: "12/14/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Load data
+
+```{r load_libs}
+library(STutility)
+library(Seurat)
+```
+
+```{r load_libs}
+
+samples <- list.files(path = "~/FFPE/analysis/data/", pattern = "filtered_feature_bc_matrix.h5", recursive = T, full.names = T)
+spotfiles <- list.files(path = "~/FFPE/analysis/data/", pattern = "tissue_positions_list.csv", recursive = T, full.names = T)
+json <- list.files(path = "~/FFPE/analysis/data/", pattern = "scalefactors_json.json", recursive = T, full.names = T)
+imgs <- list.files(path = "~/FFPE/analysis/data/", pattern = "tissue_hires_image.png", recursive = T, full.names = T)
+
+infoTable <- data.frame(samples, imgs, spotfiles, json, stringsAsFactors = F)
+infoTable <- infoTable[-18, ]
+infoTable$date <- c("37 yrs", "18 yrs", "10 yrs", "5 yrs",
+                    "6 mos", "6 mos", 
+                    "1yr. 8 mos", "1yr. 8 mos", "1yr. 8 mos", "1yr. 8 mos",
+                    "1 mo", "1 mo", "1 mo", 
+                    "1 mo", "1 mo", "1 mo", "1 mo", 
+                    "3 mos", "3 mos", "3 mos", "3 mos",
+                    "3 mos", "3 mos",
+                    "3 mos")
+
+se.list <- lapply(1:nrow(infoTable), function(i) {
+  InputFromTable(infoTable[i, ])
+})
+
+```
+
+```{r}
+
+sampleids <- do.call(rbind, strsplit(infoTable$samples, "/"))[, 9]
+qc.matrix <- do.call(rbind, lapply(seq_along(se.list), function(i) {
+  data.frame(unique_genes = se.list[[i]]$nFeature_RNA, 
+             UMIs = se.list[[i]]$nCount_RNA, 
+             sample = sampleids[i], date = se.list[[i]]$date)
+}))
+
+```
+
+
+```{r plot, fig.width=10, fig.height=6}
+
+lvls <- c("1 mo", "3 mos", "6 mos", "1yr. 8 mos", "5 yrs", "10 yrs", "18 yrs", "37 yrs")
+qc.matrix$date <- factor(qc.matrix$date, levels = lvls)
+p1 <- ggplot(qc.matrix, aes(sample, unique_genes, fill = date)) +
+  geom_violin() +
+  geom_boxplot(width = 0.1) +
+  facet_grid(~date, scales = "free", space='free') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), 
+        axis.title.x = element_blank(),
+        panel.background = element_blank(), 
+        panel.grid = element_line(colour = "lightgray", linetype = "longdash")) +
+  guides(fill = F)
+p2 <- ggplot(qc.matrix, aes(sample, UMIs, fill = date)) +
+  geom_violin() +
+  geom_boxplot(width = 0.1) +
+  facet_grid(~date, scales = "free", space='free') +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), 
+        axis.title.x = element_blank(),
+        panel.background = element_blank(), 
+        panel.grid = element_line(colour = "lightgray", linetype = "longdash")) +
+  guides(fill = F)
+ggsave(plot = p1 / p2, filename = "~/FFPE/analysis/figures/suppl_figure_XXXXX/QC_metrics.pdf", width = 12, height = 7)
+
+```
+

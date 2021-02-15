@@ -1,0 +1,53 @@
+---
+title: "cell_segmentation"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load_libs}
+library(EBImage)
+library(ggplot2)
+library(cowplot)
+library(magrittr)
+library(zeallot)
+source("~/Michael_Ratz/cell_segmentation/scripts/global_functions.R")
+```
+
+
+# Segmentation workflow
+
+Apply previoulsy established segmentation workflow to uncropped and raw TIF images for each channel
+
+```{r segmentation_run, fig.height=3, fig.width=6}
+
+img.files <- "../data/immunofluorescence/DAPI_small.png"
+
+cells <- readImage(img.files, type = "PNG")
+cells <- channel(cells, mode = "gray")
+cells <- EBImage::normalize(cells)
+
+# tests
+nmask = thresh(cells, w=10, h=10, offset=0.05)
+nmask = opening(nmask, makeBrush(5, shape='disc'))
+nmask = fillHull(nmask)
+nmask = bwlabel(nmask)
+
+```
+
+# Count cells
+
+
+```{r count_features, fig.height=4, fig.width=8}
+cat("Total number of cells: ", max(nmask), "\n")
+
+par(mfrow = c(1, 2))
+display(cells, method = "raster")
+text(x = 10, y = 20, label = "Segmented nuclei", adj = c(0, 1), col = "orange", cex = 1.5)
+display(colorLabels(nmask), method = "raster")
+text(x = 10, y = 20, label = "Watershed labeling", adj = c(0, 1), col = "orange", cex = 1.5)
+
+```
+

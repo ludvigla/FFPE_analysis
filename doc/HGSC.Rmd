@@ -1,0 +1,212 @@
+---
+title: "Analysis of HGSC tumors"
+author: "Ludvig Larsson"
+date: "5/13/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load_libs, warning=FALSE, message=FALSE}
+
+library(STutility)
+library(magrittr)
+library(dplyr)
+library(ggplot2)
+library(magick)
+library(gprofiler2)
+library(dplyr)
+
+```
+
+
+## Prep data
+***
+
+Here we'll load a high resolution version of the original images (30% of the full image size).
+
+```{r read_input}
+
+samples <- list.files(path = "../data/HGSC/", pattern = "filtered_feature", recursive = TRUE, full.names = TRUE)
+imgs <- list.files(path = "../data/HGSC/", pattern = "hires_image", recursive = TRUE, full.names = TRUE)
+spotfiles <- list.files(path = "../data/HGSC/", pattern = "tissue_positions", recursive = TRUE, full.names = TRUE)
+json <- list.files(path = "../data/HGSC/", pattern = "scalefactors", recursive = TRUE, full.names = TRUE)
+
+infoTable <- data.frame(samples, imgs, spotfiles, json, 
+                        sample_id = paste0("sample_", 1:4),
+                        stringsAsFactors = FALSE)
+
+se.ID103 <- InputFromTable(infoTable)
+
+```
+
+## Quality control
+***
+
+The average number of unique genes per spot is around 1k but overall the data is very sparse.
+
+```{r qc}
+
+QC <- function(object) {
+  smpls <- GetStaffli(object)@meta.data$sample
+  unique.smpls <- unique(smpls)
+  df <- do.call(rbind, lapply(unique.smpls, function(s) {
+    m <- object@assays$RNA@counts[, smpls == s]
+    m <- data.frame(nGene = colSums(m > 0), nUMI = colSums(m), sample = s, stringsAsFactors = FALSE)
+  }))
+  df %>% group_by(sample) %>%
+    summarize(mean_nGene = mean(nGene), median_nGene = median(nGene), max_nGene = max(nGene), min_nGene = min(nGene), 
+              mean_nUMI = mean(nUMI), median_nUMI = median(nUMI), max_nUMI = max(nUMI), min_nUMI = min(nUMI))
+}
+
+qc.df <- QC(se.ID103)
+qc.df
+
+```
+
+## Filter
+***
+
+Remove mitochondrial protein coding genes and enrich for protein coding genes
+
+
+```{r filter, fig.width=14, fig.height=6}
+
+gene_attr.ID103 <- data.frame(nUMI = Matrix::rowSums(se.ID103@assays$RNA@counts))
+
+# Reload data with filters
+se.ID103 <- InputFromTable(infoTable, min.gene.count = 10, min.spot.feature.count = 150)
+# Remove mitochondrial genes
+ensids <- read.table(file = "../data/annotation/GRCh38_genes.tsv", header = T, sep = "\t", stringsAsFactors = FALSE)
+bio.keep <- c("protein_coding", "TR_V_gene", "TR_D_gene", "TR_J_gene", "TR_C_gene", "IG_LV_gene", "IG_V_gene", "IG_J_gene", "IG_C_gene", "IG_D_gene")
+ensids <- subset(ensids, gene_biotype %in% bio.keep)
+mt.genes <- grep(pattern = "^MT-", x = rownames(se.ID103), value = TRUE)
+
+keep.genes <- setdiff(ensids$gene_name, mt.genes)
+se.ID103 <- se.ID103[intersect(rownames(se.ID103), keep.genes), ]
+
+```
+
+## Normalize
+***
+
+```{r read_data, include=FALSE}
+se.ID103 <- readRDS("../R_objects/se.ID103")
+```
+```{r normalize, eval=FALSE}
+
+se.ID103 <- SCTransform(se.ID103, return.only.var.genes = FALSE, variable.features.n = NULL, variable.features.rv.th = 1.1)
+
+```
+
+## Load images
+***
+
+Section 1 and 2 are oriented quite differently so we'll align section 2 to section 1 using `ManualAlignImages`.
+
+```{r load_images, eval=FALSE}
+
+se.ID103 <- LoadImages(se.ID103, time.resolve = FALSE)
+se.ID103 <- ManualAlignImages(se.ID103, type = "raw", edges = FALSE)
+
+```
+
+
+## NNMF
+***
+
+```{r NMF, eval=FALSE}
+
+se.ID103 <- RunNMF(se.ID103, nfactors = 15)
+
+```
+
+### Pathway analysis
+
+```{r nmf_pathways}
+
+se.ID103 <- readRDS("../R_objects/se.ID103")
+
+# inflexion point selection
+top.genes <- lapply(1:13, function(i) {
+  vals <- se.ID103@reductions$NMF@feature.loadings[, i]
+  logvals <- log(vals)
+  logvals <- logvals[is.finite(logvals)]
+  thr <- mean(logvals) + 1.645*sd(logvals)
+  names(logvals[logvals > thr])
+})
+
+pathways <- lapply(seq_along(top.genes), function(i) {
+  gset <- top.genes[[i]]
+  df1 <- gost(query = gset, organism = "mmusculus", sources = "GO:BP", evcodes = TRUE)$result
+  df2 <- gost(query = gset, organism = 'gp__aJd5_EBf2_fFc', evcodes = TRUE)$result
+  df <- rbind(df1, df2)
+  if (is.null(df)) return(NULL)
+  df$factor <- paste0("factor_", i)
+  return(df)
+})
+pathways <- do.call(rbind, pathways)
+
+pathways$factor <- factor(pathways$factor, paste0("factor_", 1:13))
+pathways.summarized <- pathways %>% 
+  group_by(factor) %>%
+  top_n(n = 5, wt = -log10(p_value)) %>%
+  mutate(GeneRatio = intersection_size/query_size) %>%
+  arrange(factor(factor, levels = paste0("factor_", 13:1)), -p_value) %>%
+  ungroup() %>%
+  mutate(ord = 1:n()) 
+
+sm <- pathways.summarized %>% group_by(factor) %>% summarize(x_start = min(ord)) %>% as.data.frame()
+rownames(sm) <- sm$factor
+sm <- sm[paste0("factor_", 13:1), ]
+sm$x_end <- sm$x_start + c(diff(sm$x_start), nrow(pathways.summarized) - max(sm$x_start) + 1)
+sm$x_start <- sm$x_start - 0.5
+sm$x_end <- sm$x_end - 0.5
+sm$x_mid <- (sm$x_end + sm$x_start)/2
+
+# Remove term prefix
+pathways.summarized$term_name[pathways.summarized$source == "h.all.v7.1.symbols"] <- pathways.summarized$term_id[pathways.summarized$source == "h.all.v7.1.symbols"]
+pathways.summarized$term_name <- gsub(pattern = "_", replacement = " ", x = pathways.summarized$term_name)
+pathways.summarized$term_name <- tolower(pathways.summarized$term_name)
+pathways.summarized$face <- ifelse(pathways.summarized$source == "GO:BP", "plain", "bold")
+
+```
+
+```{r plot_pathways_results, fig.width=6, fig.height=10}
+ggplot() +
+  geom_rect(data = sm, aes(xmin = x_start, xmax = x_end, ymin = 0, ymax = 30, fill = factor), alpha = 0.5, color = "black") +
+  geom_segment(data = pathways.summarized, aes(x = ord, xend = ord, y = 0, yend = -log10(p_value)), stat = "identity", linetype = "dashed") +
+  geom_point(data = pathways.summarized, aes(ord, -log10(p_value), size = GeneRatio), stat = "identity", shape = 21, fill = "grey") +
+  scale_x_continuous(position = "top", breaks = pathways.summarized$ord, labels = pathways.summarized$term_name) +
+  scale_y_continuous(limits = c(0, 30), breaks = seq(0, 30, length.out = 9), expand = c(0, 0)) +
+  scale_size_continuous(range = c(0.5, 5)) +
+  #guides(fill = FALSE) +
+  coord_flip() +
+  theme(legend.position = "bottom", 
+        axis.text.y = element_text(face = pathways.summarized$face, size = 7), 
+        plot.margin = margin(t = 1, r = 1, b = 0, l = 10), 
+        axis.text.x = element_text(), 
+        panel.background = element_blank(), 
+        panel.grid.major.y = element_line(color = "lightgray"), 
+        panel.grid.minor.y = element_line(color = "lightgray"), 
+        plot.background = element_blank()) +
+  labs(fill = "", x = "")
+
+```
+
+## Date
+***
+
+```{r date}
+date()
+```
+
+## Session info
+***
+
+```{r session}
+sessionInfo()
+
+```

@@ -1,0 +1,380 @@
+---
+title: "Analysis of FFPE mouse brain"
+author: "Ludvig Larsson"
+date: "5/20/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r load_libs, warning=FALSE, message=FALSE}
+
+library(STutility)
+library(magrittr)
+library(dplyr)
+
+```
+
+# Load data
+***
+
+```{r read_input}
+
+samples <- list.files("../data/Covid19/", pattern = "filtered", recursive = T, full.names = T)
+imgs <- list.files("../data/Covid19/", pattern = "small.jpg", recursive = T, full.names = T)
+spotfiles <- list.files("../data/Covid19/", pattern = "tissue_positions", recursive = T, full.names = T)
+json <- list.files("../data/Covid19/", pattern = "scalefactors", recursive = T, full.names = T)
+
+infoTable <- data.frame(samples, imgs, spotfiles, 
+                        sample_id = c("sample_1", "sample_2"), 
+                        stringsAsFactors = F)
+
+se <- InputFromTable(infoTable, scaleVisium = 0.3)
+
+```
+
+## Gene filter
+***
+
+Here I have enriched all datasets for gene labelled with a biotype of one of the following; "protein_coding", "TR_V_gene", "TR_D_gene", "TR_J_gene", "TR_C_gene", "IG_LV_gene", "IG_V_gene", "IG_J_gene", "IG_C_gene", "IG_D_gene"
+
+This will filter out all "ncRNA" och keep only protein coding genes. I also removed all protein coding genes located in the mitochondrial genome. Then, as a final filter on spot level I excluded all spots containg 100 genes or less (after filtering out the previously mentioned genes).
+
+```{r filter_data}
+
+ensids <- read.table("../data/annotation/GRCh38_genes.tsv", header = TRUE, stringsAsFactors = FALSE)
+ensids$gene_name <- paste0("GRCh38--", ensids$gene_name)
+rownames(ensids) <- ensids$gene_name
+
+gene_attr <- data.frame(gene = rownames(se), biotype = ensids[rownames(se), ]$gene_biotype, count = Matrix::rowSums(se@assays$RNA@counts))
+gene_attr.summarized <- gene_attr %>% 
+  dplyr::group_by(biotype) %>%
+  dplyr::summarize(count = sum(count)) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(count = count/sum(count))
+
+ggplot(gene_attr.summarized, aes(x = "", y = count, fill = biotype)) +
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar("y", start = 0)
+
+# Define what biotypes to keep
+bio.keep <- c("protein_coding", "TR_V_gene", "TR_D_gene", "TR_J_gene", "TR_C_gene", "IG_LV_gene", "IG_V_gene", "IG_J_gene", "IG_C_gene", "IG_D_gene")
+genes.keep <- intersect(rownames(se), subset(ensids, gene_biotype %in% bio.keep)$gene_name)
+
+# Define what genes to remove
+genes.remove <- grep(pattern = "GRCh38--MT-", x = rownames(se), value = TRUE)
+
+# Define what genes to keep
+genes.keep <- setdiff(genes.keep, genes.remove)
+genes.keep <- c(genes.keep, "wuhCor1-ORF1ab")
+
+# Filter data
+se <- se[genes.keep, ]
+se$nFeature_RNA <- Matrix::colSums(se@assays$RNA@counts > 0)
+se$nCount_RNA <- Matrix::colSums(se@assays$RNA@counts)
+se <- SubsetSTData(se, spots = rownames(subset(se[[]], nFeature_RNA > 100)))
+
+rownames(se@assays$RNA@counts) <- gsub(pattern = "GRCh38--", replacement = "", x = rownames(se))
+rownames(se@assays$RNA@data) <- gsub(pattern = "GRCh38--", replacement = "", x = rownames(se))
+
+```
+
+## Quality Control
+***
+
+```{r QC}
+
+se <- SetIdent(se, value = "sample_id")
+gg <- data.frame(sample = se$sample_id, 
+                 unique_genes = se$nFeature_RNA,
+                 UMIs = se$nCount_RNA)
+
+p1 <- ggplot(gg, aes(sample, unique_genes, fill = sample)) +
+  geom_violin() +
+  geom_boxplot(width = 0.1) +
+  theme_minimal()
+p2 <- ggplot(gg, aes(sample, UMIs, fill = sample)) +
+  geom_violin() +
+  geom_boxplot(width = 0.1) +
+  theme_minimal()
+p1 - p2
+
+ggsave(filename = "../figures/suppl_fig_XX/QC_violin.pdf", width = 10, height = 4)
+
+```
+
+## Analysis of FFPE section
+***
+
+```{r run_analysis, fig.width=9, fig.height=7}
+
+se <- se %>%
+  SCTransform(return.only.var.genes = FALSE)
+
+se <- se %>% RunNMF(nfactors = 15, n.cores = 7)
+
+se <- se %>%
+  #RunPCA() %>%
+  FindNeighbors(dims = 1:15, reduction = "NMF") %>%
+  FindClusters(resolution = 0.6) %>%
+  RunUMAP(dims = 1:15, reduction = "NMF", n.epochs = 1e3)
+
+  
+```
+
+factor heatmap
+
+```{r, fig.width=4, fig.height=9}
+
+library(zeallot)
+c(df1, df2) %<-% SummarizeAssocFeatures(se, features.return = 6)
+p <- swne::ggHeat(df2[nrow(df2):1, ], rescaling = "column") +
+  scale_fill_gradientn(colors = viridis::magma(n = 9) %>% rev())
+
+pdf(file = "~/FFPE/analysis/figures/suppl_figure_XXX/factors_overview.pdf", width = 10, height = 12)
+print(p)
+dev.off()
+
+c(df1, df2) %<-% SummarizeAssocFeatures(se, features.return = 3)
+p <- swne::ggHeat(df2[nrow(df2):1, ], rescaling = "column") +
+  scale_fill_gradientn(colors = viridis::magma(n = 9) %>% rev())
+
+pdf(file = "~/FFPE/analysis/figures/suppl_figure_XXX/factors_overview_few.pdf", width = 10, height = 6)
+print(p)
+dev.off()
+
+```
+
+
+Crop data
+
+```{r}
+
+se <- LoadImages(se, time.resolve = F)
+crop.windows <- list(TLS = c("1" = "2843x2482+7438+1595", "2" = "2402x2578+4235+5925"),
+                     SM = c("1" = "3382x3066+6730+5908", "2" = "3149x3348+8435+5700"))
+
+se.cropped.list <- lapply(crop.windows, function(crop.w) {
+  CropImages(se, crop.geometry.list = crop.w, xdim = 2e3)
+})
+
+# Export HE images
+jpeg(filename = "~/FFPE/Covid_zoom_in.jpeg", width = 4000, height = 2000, res = 300)
+ImagePlot(se.cropped.list[[1]], method = "raster", annotate = F)
+dev.off()
+
+```
+
+```{r, fig.width=10, fig.height=5}
+
+FeatureOverlay(se.cropped.list[[1]], features = "PIGR", sampleids = 1:2, ncols.features = 1,
+               ncols.samples = 2, show.sb = F, pt.size = 8, value.scale = "all")
+
+```
+
+Main figure 4
+
+```{r}
+
+for (i in 1:15) {
+  max_val <- max(max(se.cropped.list[[1]]@reductions$NMF@cell.embeddings[, paste0("factor_", i)]),
+             max(se.cropped.list[[2]]@reductions$NMF@cell.embeddings[, paste0("factor_", i)]))
+p1 <- FeatureOverlay(se.cropped.list[[1]], features = paste0("factor_", i), sample.label = F,
+                     max.cutoff = "q99", pt.size = 9,
+                     value.scale = c(0, max_val),
+                     cols = c("lightgray", cols[4]),
+                     add.alpha = T, custom.theme = th)
+p2 <- FeatureOverlay(se.cropped.list[[2]], features = paste0("factor_", i), sample.label = F,
+                     max.cutoff = "q99", pt.size = 7,
+                     value.scale = c(0, max_val),
+                     cols = c("lightgray", cols[4]),
+                     add.alpha = T, custom.theme = th)
+p3 <- FactorGeneLoadingPlot(se.cropped.list[[1]], factor = i, topn = 20)
+
+ggsave(filename = paste0("../figures/suppl_figure_XXX/factors/factor_", i, ".pdf"), 
+       plot = cowplot::plot_grid(p1, p2, p3, ncol = 1, rel_heights = c(1, 1, 1)), 
+       height = 18, width = 6)
+}
+
+markers <- c("CXCL13", "CCL19", "IGHA1", "IGHA2", "IGHG3", "IGHG3", "IGHM", "LTF",
+             "TRAC", "TRBC1", "TRBC2", "MS4A1", "IL7R", "FDCSP", "CR2", "TMPRSS2")
+
+#se.cropped.list <- lapply(se.cropped.list, function(se) {
+#  SCTransform(se)
+#})
+
+for (gene in markers) {
+  max_val <- max(max(se.cropped.list[[1]]@assays$SCT@data[gene, ]),
+             max(se.cropped.list[[2]]@assays$SCT@data[gene, ]))
+p1 <- FeatureOverlay(se.cropped.list[[1]], features = gene, sample.label = F,
+                     max.cutoff = "q99", pt.size = 9,
+                     value.scale = c(0, max_val),
+                     cols = c("lightgray", cols[4]),
+                     add.alpha = T, custom.theme = th)
+p2 <- FeatureOverlay(se.cropped.list[[2]], features = gene, sample.label = F,
+                     max.cutoff = "q99", pt.size = 7,
+                     value.scale = c(0, max_val),
+                     cols = c("lightgray", cols[4]),
+                     add.alpha = T, custom.theme = th)
+
+ggsave(filename = paste0("../figures/suppl_figure_XXX/markers/", gene, ".pdf"), 
+       plot = cowplot::plot_grid(p1, p2, ncol = 1, rel_heights = c(1, 1)), 
+       height = 12, width = 6)
+}
+
+markers <- "TMPRSS2"
+for (gene in markers) {
+  max_val <- max(max(se.cropped.list[[1]]@assays$SCT@data[gene, ]),
+             max(se.cropped.list[[2]]@assays$SCT@data[gene, ]))
+  se.sbst1 <- SubsetSTData(se.cropped.list[[1]], expression = TMPRSS2 > 0)
+  se.sbst2 <- SubsetSTData(se.cropped.list[[2]], expression = TMPRSS2 > 0)
+p1 <- FeatureOverlay(se.sbst1, features = gene, sample.label = F,
+                     pt.size = 9,
+                     value.scale = c(0, max_val),
+                     cols = RColorBrewer::brewer.pal(n = 9, name = "Spectral") %>% rev(),
+                     add.alpha = F, custom.theme = th)
+p2 <- FeatureOverlay(se.sbst2, features = gene, sample.label = F,
+                     pt.size = 7,
+                     value.scale = c(0, max_val),
+                     cols = RColorBrewer::brewer.pal(n = 9, name = "Spectral") %>% rev(),
+                     add.alpha = F, custom.theme = th)
+
+ggsave(filename = paste0("../figures/suppl_figure_XXX/markers/", gene, ".pdf"), 
+       plot = cowplot::plot_grid(p1, p2, ncol = 1, rel_heights = c(1, 1)), 
+       height = 12, width = 6)
+}
+
+```
+
+Export factors
+
+```{r }
+
+top.drivers <- se.cropped@reductions$NMF@feature.loadings
+y <- do.call(rbind, lapply(1:ncol(top.drivers), function(i) {
+  x <- sort(top.drivers[, i], decreasing = T)[1:100]
+  data.frame(weight = x, gene = names(x), factor = paste0("factor_", i))
+}))
+library(openxlsx)
+
+for (i in 1:15) {
+  jpeg(filename = paste0("~/FFPE/analysis/figures/suppl_fig_XX/factors/factor_", i, ".jpeg"), width = 4000, height = 2000, res = 300)
+  p1 <- FeatureOverlay(se.cropped.list[[1]], features = paste0("factor_", i), 
+                 sampleids = 1, ncols.features = 1, ncols.samples = 1, sample.label = F,
+                 show.sb = F, pt.size = 7, value.scale = "all", add.alpha = T, 
+                 max.cutoff = "q99", custom.theme = theme(plot.margin = margin(0,0,0,0, "cm"), legend.position = "top"))
+  p2 <- FeatureOverlay(se.cropped.list[[2]], features = paste0("factor_", i), 
+                 sampleids = 1, ncols.features = 1, ncols.samples = 1, sample.label = F,
+                 show.sb = F, pt.size = 7, value.scale = "all", add.alpha = T, 
+                 max.cutoff = "q99", custom.theme = theme(plot.margin = margin(0,0,0,0, "cm"), legend.position = "top"))
+  print(p1 - p2)
+  dev.off()
+}
+
+#1dat <- split(y, y$factor)
+#1wb <- createWorkbook()
+#1Map(function(data, name){
+#1    addWorksheet(wb, name)
+#1    writeData(wb, name, data)
+#1}, dat, names(dat))
+#1saveWorkbook(wb, file = "../figures/suppl_fig_XX/factor_driving_genes.xlsx", overwrite = TRUE)
+
+
+```
+
+
+Single cell markers
+
+```{r }
+
+library(readxl)
+path <- "../data/lungcellmarkers/41586_2020_2922_MOESM6_ESM.xlsx"
+sheetnames <- excel_sheets(path)
+sheetnames <- sheetnames[-grep(pattern = "SS", x = sheetnames)]
+nms <- c()
+mylist <- lapply(sheetnames, function(xlp) {
+  xl <- read_excel(path = path, sheet = xlp)
+  nms <<- c(nms, colnames(xl)[1])
+  xl <- read_excel(path = path, sheet = xlp, skip = 1)
+})
+mylist <- setNames(mylist, nm = nms)
+
+GeneSets <- lapply(mylist, function(x) {
+  (x %>% filter(avg_logFC > 0.8, p_val_adj < 0.01))$Gene
+})
+
+```
+
+
+Cor AUC with factors
+
+```{r, fig.width=3.5, fig.height=3}
+
+spots_rankings <- AUCell_buildRankings(se@assays$SCT@data, nCores = 7, plotStats = FALSE)
+cells_AUC <- AUCell_calcAUC(GeneSets, spots_rankings, aucMaxRank = ceiling(0.05 * nrow(spots_rankings)))
+
+NMF <- se@reductions$NMF@cell.embeddings
+se[["AUC"]] <- CreateAssayObject(data = getAUC(cells_AUC))
+AUC <- se[["AUC"]]@data
+AUC <- AUC[c("B", "Plasma", "CD4+ Naive T", "CD8+ Naive T", 
+             "CD8+ Memory/Effector T", "CD4+ Memory/Effector T",
+             "Ciliated", "Basal", "Serous", "Goblet", "Mucous",
+             "Alveolar Epithelial Type 1", "Alveolar Epithelial Type 2",
+             "Lymphatic", "Airway Smooth Muscle", "Vascular Smooth Muscle",
+             "Macrophage", "Alveolar Fibroblast", "Fibromyocyte", "Myofibroblast" ,
+              "Classical Monocyte", "Capillary", "Myeloid Dendritic Type 1",
+             "Myeloid Dendritic Type 2",
+              "Nonclassical Monocyte"), ]
+cors <- setNames(as.data.frame(sapply(1:15, function(i){
+  setNames(unlist(lapply(rownames(AUC), function(n) {
+    cor(log1p(NMF[, i]), log1p(AUC[n, ]))
+  })), rownames(AUC))
+})), paste0("factor_", 1:15))
+
+m <- t(cors)
+#p <- pheatmap::pheatmap(m, border_color = "white", 
+#                   color = colorRampPalette(RColorBrewer::brewer.pal(n = 11, name = "RdBu") %>% rev())(50),
+#                   breaks = seq(-max(m), max(m), length.out = 51))
+
+d.row <- dist(m)
+tree.row <- hclust(d.row, method = "ward.D2")
+d.col <- dist(t(m))
+tree.col <- hclust(d.col, method = "ward.D2")
+
+mm <- reshape2::melt(m)
+mm$Var1 <- factor(mm$Var1, levels = rownames(m)[tree.row$order])
+mm$Var2 <- factor(mm$Var2, levels = colnames(m)[rev(tree.col$order)])
+
+p <- ggplot(mm) +
+  geom_tile(aes(Var1, Var2), fill = NA, color = "lightgray") +
+  geom_point(aes(Var1, Var2, size = abs(value), color = value)) +
+  guides(size = F) +
+  scale_size_continuous(range = c(2, 7)) +
+  scale_color_gradientn(colours = RColorBrewer::brewer.pal(n = 11, name = "RdBu") %>% rev(), 
+                        limits = c(-max(mm$value), max(mm$value)),
+                        breaks = c(-0.6, -0.3, 0, 0.3, 0.6)) +
+  theme_minimal() +
+  labs(x = "",  y = "", color = "correlation\nscore") +
+  theme(panel.grid = element_blank(), 
+        axis.text.x = element_text(angle = 30, hjust = 1, color = "black"),
+        axis.text.y = element_text(color = "black"))
+
+ggsave(filename = "../figures/suppl_figure_XXX/cor_heatmap_factor_AUC_scores.pdf", width = 7, height = 7)
+png(filename = "../figures/suppl_figure_XXX/cor_heatmap_factor_AUC_scores..png", width = 2400, height = 2400, res = 300)
+print(p)
+dev.off()
+
+```
+
+
+```{r, fig.width=6, fig.height=4}
+
+#se.cropped.list <- lapply(se.cropped.list, function(se) {
+#SCTransform(se)
+#})
+FeatureOverlay(se.cropped.list[[1]], features = c("CXCR4", "CCL21", "CCL19", "IL7R", "IL22", "IL23"), 
+               show.sb = F, pt.size = 4, add.alpha = T, palette = "Spectral", ncols.features = 3)
+
+```

@@ -1,0 +1,352 @@
+---
+title: "Analysis of FFPE mouse brain"
+author: "Ludvig Larsson"
+date: "5/20/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Load libraries
+
+NOTE: Make sure that you have sctransform v0.2.1 installed to reproduce the plots. Later version might change the normalization outcome.
+
+```{r load_libs, warning=FALSE, message=FALSE}
+
+# devtools::install_github("jbergenstrahle/STUtility")
+library(STutility)
+library(magrittr)
+library(dplyr)
+library(harmony)
+
+```
+
+# Load data
+***
+
+```{r read_input}
+
+samples <- c("../data/mousebrain/V19T26-039_A1/filtered_feature_bc_matrix.h5",
+             "../data/mousebrain/public_data_FF/V1_Adult_Mouse_Brain_filtered_feature_bc_matrix.h5")
+
+imgs <- c("../data/mousebrain/V19T26-039_A1/spatial/tissue_hires_image.png",
+          "../data/mousebrain/public_data_FF/spatial/tissue_hires_image.png")
+
+spotfiles <- c("../data/mousebrain/V19T26-039_A1/spatial/tissue_positions_list.csv",
+               "../data/mousebrain/public_data_FF/spatial/tissue_positions_list.csv")
+
+json <- c("../data/mousebrain/V19T26-039_A1/spatial/scalefactors_json.json",
+          "../data/mousebrain/public_data_FF/spatial/scalefactors_json.json")
+
+infoTable <- data.frame(samples, imgs, spotfiles, json, condition = c("FFPE", "FF"), sample_id = c("sample_1", "sample_2"), stringsAsFactors = F)
+
+se <- InputFromTable(infoTable)
+
+```
+
+## Gene filter
+***
+
+Here I have enriched all datasets for gene labelled with a biotype of one of the following; "protein_coding", "TR_V_gene", "TR_D_gene", "TR_J_gene", "TR_C_gene", "IG_LV_gene", "IG_V_gene", "IG_J_gene", "IG_C_gene", "IG_D_gene"
+
+This will filter out all "ncRNA" och keep only protein coding genes. I also removed all protein coding genes located in the mitochondrial genome. Then, as a final filter on spot level I excluded all spots containg 100 genes or less (after filtering out the previously mentioned genes).
+
+```{r filter_data}
+
+ensids <- read.table("../data/annotation/mm10_genes.tsv", header = TRUE, stringsAsFactors = FALSE)
+rownames(ensids) <- ensids$gene_name
+
+gene_attr <- data.frame(gene = rownames(se), biotype = ensids[rownames(se), ]$gene_biotype, count = Matrix::rowSums(se@assays$RNA@counts))
+gene_attr.summarized <- gene_attr %>% 
+  dplyr::group_by(biotype) %>%
+  dplyr::summarize(count = sum(count)) %>%
+  dplyr::ungroup() %>%
+  dplyr::mutate(count = count/sum(count))
+
+ggplot(gene_attr.summarized, aes(x = "", y = count, fill = biotype)) +
+  geom_bar(width = 1, stat = "identity") +
+  coord_polar("y", start = 0)
+
+# Define what biotypes to keep
+bio.keep <- c("protein_coding", "TR_V_gene", "TR_D_gene", "TR_J_gene", "TR_C_gene", "IG_LV_gene", "IG_V_gene", "IG_J_gene", "IG_C_gene", "IG_D_gene")
+genes.keep <- intersect(rownames(se), subset(ensids, gene_biotype %in% bio.keep)$gene_name)
+
+# Define what genes to remove
+genes.remove <- grep(pattern = "^mt-", x = rownames(se), value = TRUE)
+
+# Define what genes to keep
+genes.keep <- setdiff(genes.keep, genes.remove)
+
+# Filter data
+se <- se[genes.keep, ]
+se$nFeature_RNA <- Matrix::colSums(se@assays$RNA@counts > 0)
+se$nCount_RNA <- Matrix::colSums(se@assays$RNA@counts)
+se <- SubsetSTData(se, spots = rownames(subset(se[[]], nFeature_RNA > 100)))
+
+```
+
+## Quality Control
+***
+
+Distribution of unqiue genes and UMIs per spot.
+
+```{r QC}
+
+se <- SetIdent(se, value = "condition")
+VlnPlot(se, features = c("nFeature_RNA", "nCount_RNA"), log = T, pt.size = 0.5)
+
+```
+
+### Load and process images
+***
+
+Here we'll apply a mask rotate the FFPE tissue section 
+
+```{r load_images_all}
+
+se <- LoadImages(se, time.resolve = FALSE)
+se <- MaskImages(se)
+se <- WarpImages(se, transforms = list("1" = list(angle = 60)))
+
+```
+
+## Analysis of FFPE section
+***
+
+```{r read_se.FFPE include=FALSE, eval=TRUE}
+se.FFPE <- readRDS("../R_objects/se.FFPE")
+se.FF <- readRDS("../R_objects/se.FF")
+```
+```{r run_analysis, eval=FALSE}
+
+se.FFPE <- SubsetSTData(se, spots = rownames(subset(se[[]], condition %in% "FFPE")))
+
+se.FFPE <- se.FFPE %>%
+  SCTransform(variable.features.rv.th = 1.1, variable.features.n = NULL, return.only.var.genes = FALSE) %>%
+  RunPCA() %>%
+  RunUMAP(dims = 1:25, reduction = "pca", n.epochs = 1e3, n.neighbors = 30) %>%
+  FindNeighbors(dims = 1:25, reduction = "pca") %>% 
+  FindClusters(resolution = 1.4)
+
+```
+```{r run_analysis, eval=FALSE}
+
+se.FF <- SubsetSTData(se, spots = rownames(subset(se[[]], condition %in% "FF")))
+
+se.FF <- se.FF %>%
+  SCTransform(variable.features.rv.th = 1.1, variable.features.n = NULL, return.only.var.genes = FALSE) %>%
+  RunPCA() %>%
+  RunUMAP(dims = 1:25, reduction = "pca", n.epochs = 1e3, n.neighbors = 30) %>%
+  FindNeighbors(dims = 1:25, reduction = "pca") %>% 
+  FindClusters(resolution = 0.8)
+
+```
+
+## Load registrations
+
+```{r load_regi}
+
+# Load functions
+source("global_functions.R")
+
+# Load registration objects created with the wholebrain workflow
+regi.FFPE <- readRDS("../data/registration/registration_HE_FFPE_mouse_brain")
+regi.FF <- readRDS("../data/registration/registration_HE_FF_mouse_brain")
+
+# Extract x, y coordinates
+spots.FFPE <- setNames(GetStaffli(se.FFPE)@meta.data[, c("warped_x", "warped_y")], nm = c("x", "y"))
+spots.FF <- setNames(GetStaffli(se.FF)@meta.data[, c("warped_x", "warped_y")], nm = c("x", "y"))
+
+# Obtain atlas annaotations of spots
+annotated.spots.FFPE <- get_allen_brain_annotations(regi.FFPE, xy = spots.FFPE)
+annotated.spots.FF <- get_allen_brain_annotations(regi.FF, xy = spots.FF)
+
+# Load the Allen Brain Atlas ontology
+library(wholebrain)
+data("atlasOntology")
+
+# Annotate spots at a higher level (FFPE)
+d.FFPE <- find_parents(na.omit(unique(annotated.spots.FFPE$acronym)), target_acronyms = c("STR", "CTXsp", "CA1sp", "CA3sp", "DG-sg", "VL", "HY", "fiber tracts", "TH", "OLF", "Isocortex"), ann = atlasOntology)
+se.FFPE$acronym <- annotated.spots.FFPE[colnames(se.FFPE), "acronym"]
+se.FFPE$target_acronym <- d.FFPE[se.FFPE$acronym, "target_acronym"]
+se.FFPE$target_acronym <- factor(se.FFPE$target_acronym, levels = names(sort(table(se.FFPE$target_acronym), decreasing = T)))
+
+# Annotate spots at a higher level (FF)
+d.FF <- find_parents(na.omit(unique(annotated.spots.FF$acronym)), target_acronyms = c("STR", "CTXsp", "CA1sp", "CA3sp", "DG-sg", "VL", "HY", "fiber tracts", "TH", "OLF", "Isocortex"), ann = atlasOntology)
+se.FF$acronym <- annotated.spots.FF[colnames(se.FF), "acronym"]
+se.FF$target_acronym <- d.FF[se.FF$acronym, "target_acronym"]
+se.FF$target_acronym <- factor(se.FF$target_acronym, levels = names(sort(table(se.FFPE$target_acronym), decreasing = T)))
+
+
+```
+
+### DE analysis of FFPE section clusters
+***
+
+```{r read_se.FFPEinclude=FALSE, eval=TRUE}
+de.markers.FFPE <- readRDS("../R_objects/de.markers.FFPE")
+de.markers.FF <- readRDS("../R_objects/de.markers.FF")
+```
+```{r de_analysis, eval=FALSE}
+# DE-analysis
+se.FFPE <- SetIdent(se.FFPE, value = "target_acronym")
+se.FFPE.subset <- SubsetSTData(se.FFPE, spots = names(se.FFPE$target_acronym[!is.na(se.FFPE$target_acronym)]))
+de.markers.FFPE <- FindAllMarkers(se.FFPE.subset, only.pos = F)
+top10.FFPE <- de.markers.FFPE %>%
+  dplyr::group_by(cluster) %>%
+  dplyr::filter(avg_logFC > 0) %>%
+  dplyr::top_n(n = 7, wt = -log10(p_val_adj)) %>%
+  dplyr::arrange(cluster, avg_logFC)
+```
+```{r de_analysis, eval=FALSE}
+
+# DE-analysis
+se.FF <- SetIdent(se.FF, value = "target_acronym")
+se.FF.subset <- SubsetSTData(se.FF, spots = names(se.FF$target_acronym[!is.na(se.FF$target_acronym)]))
+de.markers.FF <- FindAllMarkers(se.FF.subset, only.pos = F)
+top10.FF <- de.markers.FF %>%
+  dplyr::group_by(cluster) %>%
+  dplyr::filter(avg_logFC > 0) %>%
+  dplyr::top_n(n = 7, wt = -log10(p_val_adj)) %>%
+  dplyr::arrange(cluster, avg_logFC)
+```
+
+## Check gene overlap
+
+```{r geneoverlap, fig.width=5, fig.height=4}
+
+lvls <- c("CA1sp", "CA3sp", "CTXsp", "DG-sg", "fiber tracts", "HY", "Isocortex", "OLF", "STR", "TH", "VL")
+de.markers.FF.filtered <- de.markers.FF %>% filter(abs(avg_logFC) > 0.3)
+de.markers.FFPE.filtered <- de.markers.FFPE %>% filter(abs(avg_logFC) > 0.3)
+
+enriched.genes.FFPE <- pairwise.scores(se.FFPE)
+enriched.genes.FF <- pairwise.scores(se.FF)
+
+res <- sapply(lvls, function(lvl.A) {
+  setNames(sapply(lvls, function(lvl.B) {
+    listA = setNames(enriched.genes.FF[, lvl.A],
+                     rownames(enriched.genes.FF))
+    listA <- sort(listA, decreasing = T)[1:1000]
+    listB = setNames(enriched.genes.FFPE[, lvl.B],
+                     rownames(enriched.genes.FFPE))
+    listB <- sort(listB, decreasing = T)[1:1000]
+    rbo(listA, listB, p = 0.95)
+  }), lvls)
+})
+
+cols <- c("Isocortex" = "#ABDDA4", "CTXsp" = "#66C2A5", "OLF" = "#3288BD",
+          "CA3sp" = "#5E4FA2", "CA1sp" = "#ba8cd7", "DG-sg" = "#9E0142",
+          "TH" = "#F46D43", "HY" = "#FDAE61", 
+          "VL" = "#FEE08B", "STR" = "#FFFFBF", "fiber tracts" = "lightgray")
+o <- c("Isocortex", "CTXsp", "OLF", "CA3sp", "CA1sp", "DG-sg", "TH", "HY", "VL", "STR", "fiber tracts")
+ann <- data.frame("region" = o, row.names = o)
+ann.cols <- list("region" = cols)
+p <- pheatmap::pheatmap(res[o, o], cluster_cols = F, cluster_rows = F, border_color = NA, 
+                   color = colorRampPalette(RColorBrewer::brewer.pal(n = 9, name = "Oranges"))(50), 
+                   annotation_row = ann, annotation_col = ann, 
+                   annotation_colors = ann.cols, labels_col = "", labels_row = "")
+
+save_pheatmap_pdf <- function(x, filename, width = 7, height = 7) {
+   stopifnot(!missing(x))
+   stopifnot(!missing(filename))
+   pdf(filename, width = width, height = height)
+   grid::grid.newpage()
+   grid::grid.draw(x$gtable)
+   dev.off()
+}
+#save_pheatmap_pdf(p, "../figures/figure_1/Overlap_heatmap.pdf", width = 10, height = 8)
+
+```
+
+
+## stereoscope
+***
+
+```{r celltype_mapping_results, fig.width=20, fig.height=30}
+
+props.FFPE <- data.frame(read.table(file = "../data/stereoscope/ffpe-prop.tsv", sep = "\t", header = T), row.names = 1)
+rownames(props.FFPE) <- paste(rownames(props.FFPE), 1, sep = "_")
+
+props.FF <- data.frame(read.table(file = "../data/stereoscope/ff-prop.tsv", sep = "\t", header = T), row.names = 1)
+rownames(props.FF) <- paste(rownames(props.FF), 2, sep = "_")
+
+all.props <- rbind(props.FFPE, props.FF)
+all.props.subset <- t(all.props[colnames(se), ])
+
+assay <- CreateAssayObject(data = all.props.subset)
+
+se[["stereoscope"]] <- assay
+DefaultAssay(se) <- "stereoscope"
+ST.FeaturePlot(se, features = colnames(all.props), grid.ncol = 4, show.sb = FALSE)
+
+```
+
+```{r sum_props}
+
+gg <- sapply(unique(se$condition), function(i) {
+  x <- rowSums(all.props.subset[, colnames(se)[se$condition %in% i]])
+  x/sum(x)
+})
+ggm <- reshape2::melt(gg)
+ggm$value <- ifelse(ggm$Var2 == "FF", -ggm$value, ggm$value)
+p <- ggplot(ggm, aes(x = Var1, value, fill = Var2)) +
+  geom_bar(stat = "identity") +
+  scale_y_continuous(breaks = c(-0.15, 0, 0.15), labels = c(0.15, 0, 0.15)) +
+  labs(x = "cell type", y = "proportion", fill = "tissue type") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 30, hjust = 1, color = "black", size = 9))
+ggsave(filename = "~/FFPE/analysis/figures/suppl_figure_8/props.pdf", width = 7, height = 4)
+
+```
+
+```{r export data}
+
+#se <- ManualAnnotation(se)
+se <- SubsetSTData(se, spots = rownames(subset(se[[]], !labels %in% "remove")))
+saveRDS(object = se@assays$SCT@data, file = "~/FFPE/app/data/data")
+saveRDS(object = se@assays$stereoscope@data, file = "~/FFPE/app/data/props")
+saveRDS(object = GetStaffli(se)@meta.data, file = "~/FFPE/app/data/coords")
+
+se <- SwitchResolution(se, xdim = 1000, verbose = T)
+saveRDS(object = GetStaffli(se)@dims, file = "~/FFPE/app/data/imdims.list")
+
+st.object <- GetStaffli(se)
+for (i in c("1", "2")) {
+  im <- st.object@rasterlists$processed[[i]]
+  dims <- st.object@dims[[i]]
+  png(filename = paste0("~/FFPE/app/www/imgs/", i, ".png"), width = dim(im)[2], height = dim(im)[1], res = 300)
+  par(mar=c(0,0,0,0))
+  plot(im)
+  dev.off()
+}
+
+```
+
+```{r, include = FALSE, eval = FALSE}
+
+saveRDS(se, file = "../R_objects/se")
+saveRDS(se.FFPE, file = "../R_objects/se.FFPE")
+saveRDS(de.markers, file = "../R_objects/de.markers")
+saveRDS(intersecting.markers, file = "../R_objects/intersecting.markers")
+
+```
+
+## Date()
+***
+
+```{r date}
+
+date()
+
+```
+
+## Session info
+***
+
+```{r session_info}
+
+sessionInfo()
+
+```
