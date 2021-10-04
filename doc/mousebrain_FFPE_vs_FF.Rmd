@@ -11,11 +11,10 @@ knitr::opts_chunk$set(echo = TRUE)
 
 # Load libraries
 
-NOTE: Make sure that you have sctransform v0.2.1 installed to reproduce the plots. Later version might change the normalization outcome.
+NOTE: Make sure that you have sctransform v0.2.1 installed to reproduce the plots. Later versions might change the normalization procedure and affect the outcome.
 
 ```{r load_libs, warning=FALSE, message=FALSE}
 
-# devtools::install_github("jbergenstrahle/STUtility")
 library(STutility)
 library(magrittr)
 library(dplyr)
@@ -29,16 +28,16 @@ library(harmony)
 ```{r read_input}
 
 samples <- c("../data/mousebrain/V19T26-039_A1/filtered_feature_bc_matrix.h5",
-             "../data/mousebrain/public_data_FF/V1_Adult_Mouse_Brain_filtered_feature_bc_matrix.h5")
+             "../data/mousebrain/FF1_public_data/V1_Adult_Mouse_Brain_filtered_feature_bc_matrix.h5")
 
 imgs <- c("../data/mousebrain/V19T26-039_A1/spatial/tissue_hires_image.png",
-          "../data/mousebrain/public_data_FF/spatial/tissue_hires_image.png")
+          "../data/mousebrain/FF1_public_data/spatial/tissue_hires_image.png")
 
 spotfiles <- c("../data/mousebrain/V19T26-039_A1/spatial/tissue_positions_list.csv",
-               "../data/mousebrain/public_data_FF/spatial/tissue_positions_list.csv")
+               "../data/mousebrain/FF1_public_data/spatial/tissue_positions_list.csv")
 
 json <- c("../data/mousebrain/V19T26-039_A1/spatial/scalefactors_json.json",
-          "../data/mousebrain/public_data_FF/spatial/scalefactors_json.json")
+          "../data/mousebrain/FF1_public_data/spatial/scalefactors_json.json")
 
 infoTable <- data.frame(samples, imgs, spotfiles, json, condition = c("FFPE", "FF"), sample_id = c("sample_1", "sample_2"), stringsAsFactors = F)
 
@@ -49,25 +48,18 @@ se <- InputFromTable(infoTable)
 ## Gene filter
 ***
 
-Here I have enriched all datasets for gene labelled with a biotype of one of the following; "protein_coding", "TR_V_gene", "TR_D_gene", "TR_J_gene", "TR_C_gene", "IG_LV_gene", "IG_V_gene", "IG_J_gene", "IG_C_gene", "IG_D_gene"
+Here I have enriched all datasets for gene labelled with a biotype of one of the following: 
+"protein_coding", "TR_V_gene", "TR_D_gene", "TR_J_gene", "TR_C_gene", "IG_LV_gene", "IG_V_gene", 
+"IG_J_gene", "IG_C_gene", "IG_D_gene"
 
-This will filter out all "ncRNA" och keep only protein coding genes. I also removed all protein coding genes located in the mitochondrial genome. Then, as a final filter on spot level I excluded all spots containg 100 genes or less (after filtering out the previously mentioned genes).
+This will filter out all "ncRNA" och keep only protein coding genes. I also removed all protein 
+coding genes located in the mitochondrial genome. Then, as a final filter on spot level I excluded 
+all spots containg 100 genes or less (after filtering out the previously mentioned genes).
 
 ```{r filter_data}
 
 ensids <- read.table("../data/annotation/mm10_genes.tsv", header = TRUE, stringsAsFactors = FALSE)
 rownames(ensids) <- ensids$gene_name
-
-gene_attr <- data.frame(gene = rownames(se), biotype = ensids[rownames(se), ]$gene_biotype, count = Matrix::rowSums(se@assays$RNA@counts))
-gene_attr.summarized <- gene_attr %>% 
-  dplyr::group_by(biotype) %>%
-  dplyr::summarize(count = sum(count)) %>%
-  dplyr::ungroup() %>%
-  dplyr::mutate(count = count/sum(count))
-
-ggplot(gene_attr.summarized, aes(x = "", y = count, fill = biotype)) +
-  geom_bar(width = 1, stat = "identity") +
-  coord_polar("y", start = 0)
 
 # Define what biotypes to keep
 bio.keep <- c("protein_coding", "TR_V_gene", "TR_D_gene", "TR_J_gene", "TR_C_gene", "IG_LV_gene", "IG_V_gene", "IG_J_gene", "IG_C_gene", "IG_D_gene")
@@ -115,10 +107,6 @@ se <- WarpImages(se, transforms = list("1" = list(angle = 60)))
 ## Analysis of FFPE section
 ***
 
-```{r read_se.FFPE include=FALSE, eval=TRUE}
-se.FFPE <- readRDS("../R_objects/se.FFPE")
-se.FF <- readRDS("../R_objects/se.FF")
-```
 ```{r run_analysis, eval=FALSE}
 
 se.FFPE <- SubsetSTData(se, spots = rownames(subset(se[[]], condition %in% "FFPE")))
@@ -185,10 +173,6 @@ se.FF$target_acronym <- factor(se.FF$target_acronym, levels = names(sort(table(s
 ### DE analysis of FFPE section clusters
 ***
 
-```{r read_se.FFPEinclude=FALSE, eval=TRUE}
-de.markers.FFPE <- readRDS("../R_objects/de.markers.FFPE")
-de.markers.FF <- readRDS("../R_objects/de.markers.FF")
-```
 ```{r de_analysis, eval=FALSE}
 # DE-analysis
 se.FFPE <- SetIdent(se.FFPE, value = "target_acronym")
@@ -247,6 +231,7 @@ p <- pheatmap::pheatmap(res[o, o], cluster_cols = F, cluster_rows = F, border_co
                    color = colorRampPalette(RColorBrewer::brewer.pal(n = 9, name = "Oranges"))(50), 
                    annotation_row = ann, annotation_col = ann, 
                    annotation_colors = ann.cols, labels_col = "", labels_row = "")
+p
 
 save_pheatmap_pdf <- function(x, filename, width = 7, height = 7) {
    stopifnot(!missing(x))
@@ -263,6 +248,8 @@ save_pheatmap_pdf <- function(x, filename, width = 7, height = 7) {
 
 ## stereoscope
 ***
+
+Load cell type proportions and store in Seurat object as a new assay.
 
 ```{r celltype_mapping_results, fig.width=20, fig.height=30}
 
@@ -283,6 +270,8 @@ ST.FeaturePlot(se, features = colnames(all.props), grid.ncol = 4, show.sb = FALS
 
 ```
 
+Sum proportions over entire tissue section and display as bar charts.
+
 ```{r sum_props}
 
 gg <- sapply(unique(se$condition), function(i) {
@@ -297,39 +286,7 @@ p <- ggplot(ggm, aes(x = Var1, value, fill = Var2)) +
   labs(x = "cell type", y = "proportion", fill = "tissue type") +
   theme_minimal() +
   theme(axis.text.x = element_text(angle = 30, hjust = 1, color = "black", size = 9))
-ggsave(filename = "~/FFPE/analysis/figures/suppl_figure_8/props.pdf", width = 7, height = 4)
-
-```
-
-```{r export data}
-
-#se <- ManualAnnotation(se)
-se <- SubsetSTData(se, spots = rownames(subset(se[[]], !labels %in% "remove")))
-saveRDS(object = se@assays$SCT@data, file = "~/FFPE/app/data/data")
-saveRDS(object = se@assays$stereoscope@data, file = "~/FFPE/app/data/props")
-saveRDS(object = GetStaffli(se)@meta.data, file = "~/FFPE/app/data/coords")
-
-se <- SwitchResolution(se, xdim = 1000, verbose = T)
-saveRDS(object = GetStaffli(se)@dims, file = "~/FFPE/app/data/imdims.list")
-
-st.object <- GetStaffli(se)
-for (i in c("1", "2")) {
-  im <- st.object@rasterlists$processed[[i]]
-  dims <- st.object@dims[[i]]
-  png(filename = paste0("~/FFPE/app/www/imgs/", i, ".png"), width = dim(im)[2], height = dim(im)[1], res = 300)
-  par(mar=c(0,0,0,0))
-  plot(im)
-  dev.off()
-}
-
-```
-
-```{r, include = FALSE, eval = FALSE}
-
-saveRDS(se, file = "../R_objects/se")
-saveRDS(se.FFPE, file = "../R_objects/se.FFPE")
-saveRDS(de.markers, file = "../R_objects/de.markers")
-saveRDS(intersecting.markers, file = "../R_objects/intersecting.markers")
+p
 
 ```
 

@@ -11,11 +11,10 @@ knitr::opts_chunk$set(echo = TRUE)
 
 # Load libraries
 
-NOTE: Make sure that you have sctransform v0.2.1 installed to reproduce the plots. Later version might change the normalization outcome.
+NOTE: Make sure that you have sctransform v0.2.1 installed to reproduce the plots. Later versions might change the normalization procedure.
 
 ```{r load_libs, warning=FALSE, message=FALSE}
 
-# devtools::install_github("jbergenstrahle/STUtility")
 library(STutility)
 library(magrittr)
 library(dplyr)
@@ -26,79 +25,37 @@ library(harmony)
 # Load data
 ***
 
-Here we will include 7 FFPE coronal (mouse brain) section datasets for the analysis.
+Here we have included 7 FFPE mouse brain section datasets for the analysis.
 
 ```{r read_input}
 
-samples <- list.files(path = "../data/mousebrain/", pattern = "filtered_feature_bc_matrix.h5", recursive = T, full.names = T)#[2:8]
-imgs <- list.files(path = "../data/mousebrain/", pattern = "tissue_hires_image.png", recursive = T, full.names = T)#[2:8]
-spotfiles <- list.files(path = "../data/mousebrain/", pattern = "tissue_positions_list.csv", recursive = T, full.names = T)#[2:8]
-json <- list.files(path = "../data/mousebrain/", pattern = "scalefactors_json.json", recursive = T, full.names = T)#[2:8]
+dirs <- c("../data/mousebrain/V10F24-078_A1",
+          "../data/mousebrain/V10F24-078_B1", "../data/mousebrain/V10F24-078_C1",
+          "../data/mousebrain/V10F24-078_D1", "../data/mousebrain/V10F24-110_A1",
+          "../data/mousebrain/V10F24-110_B1", "../data/mousebrain/V19T26-039_A1")
+samples <- sapply(dirs, function(p) {list.files(path = p, pattern = "filtered", recursive = T, full.names = T)})
+imgs <- sapply(dirs, function(p) {list.files(path = p, pattern = "tissue_hires_image.png", recursive = T, full.names = T)})
+spotfiles <- sapply(dirs, function(p) {list.files(path = p, pattern = "tissue_positions_list.csv", recursive = T, full.names = T)})
+json <- sapply(dirs, function(p) {list.files(path = p, pattern = "scalefactors_json.json", recursive = T, full.names = T)})
+
 
 infoTable <- data.frame(samples, imgs, spotfiles, json, 
-                        condition = c("normal", "normal", "normal", "normal", "normal",  "RU", "RU", "normal"),
-                        date = c("NA", "200925", "200925", "200925", "200925", "201016", "201016", "200513"), 
-                        sample_id = c("public_data_FF", "V10F24-078_A1", "V10F24-078_B1", "V10F24-078_C1", "V10F24-078_D1", "V10F24-110_A1", "V10F24-110_B1", "V19T26-039_A1"), 
+                        condition = c( "normal", "normal", "normal", "normal",  "RU", "RU", "normal"),
+                        date = c("200925", "200925", "200925", "200925", "201016", "201016", "200513"), 
+                        sample_id = c("FFPE1", "FFPE2", "FFPE3", "FFPE4", "FFPE5", "FFPE6", "FFPE7"), 
                         stringsAsFactors = F)
-infoTable <- infoTable[c(8, 1:7), ]
+infoTable <- infoTable[c(7, 1:6), ]
 
 se <- InputFromTable(infoTable)
 
 ```
 
-```{r, fig.width=10, fig.height=10}
-
-ensids <- read.table("../data/annotation/mm10_genes.tsv", header = TRUE, stringsAsFactors = FALSE)
-rownames(ensids) <- ensids$gene_name
-
-gene_attr <- do.call(cbind, lapply(unique(se$sample_id), function(i) {
-  count = Matrix::rowSums(se@assays$RNA@counts[, se$sample_id %in% i])
-}))
-colnames(gene_attr) <- unique(se$sample_id)
-gene_attr <- data.frame(gene = rownames(se), biotype = ensids[rownames(se), ]$gene_biotype, gene_attr)
-gene_attr_melt <- reshape2::melt(gene_attr, measure.vars = colnames(gene_attr)[-c(1, 2)])
-
-# mt-genes
-mt.genes <- grep(pattern = "^mt-", x = gene_attr_melt$gene, value = T)
-gene_attr_melt$biotype <- ifelse(gene_attr_melt$gene %in% mt.genes, "protein_coding_mitochondrial", gene_attr_melt$biotype)
-
-# ribo-genes
-ribo.genes <- grep(pattern = "Rpl|Rps", x = gene_attr_melt$gene, value = T)
-gene_attr_melt$biotype <- ifelse(gene_attr_melt$gene %in% ribo.genes, "protein_coding_ribosomal", gene_attr_melt$biotype)
-
-# Add date
-conv <- se@meta.data[, c("date", "sample_id")]
-conv$sample_id <- gsub("-", ".", conv$sample_id)
-conv <- conv[!duplicated(conv), ]
-conv <- setNames(conv$date, conv$sample_id)
-gene_attr_melt$date <- conv[gene_attr_melt$variable]
-
-gene_attr.summarized <- gene_attr_melt %>% 
-  dplyr::group_by(biotype, date, variable) %>%
-  dplyr::summarize(count = sum(value)) %>%
-  dplyr::group_by(date, variable) %>%
-  dplyr::mutate(count = count/sum(count))
-
-gene_attr.summarized$variable <- factor(gene_attr.summarized$variable, levels = c("public_data_FF", "V10F24-078_A1", "V10F24-078_B1", "V10F24-078_C1", "V10F24-078_D1", "V10F24-110_A1", "V10F24-110_B1", "V19T26-039_A1"))
-gene_attr.summarized$date <- factor(gene_attr.summarized$date, levels = c("NA", "200925", "201016", "200513"))
-p <- ggplot(gene_attr.summarized, aes(x = variable, y = count, fill = biotype)) +
-  geom_bar(width = 0.9, stat = "identity", color = "black") +
-  theme_classic() +
-  labs(y = "RNA biotype content") +
-  facet_grid(~date, scales = "free_x", space = "free_x") +
-  theme(axis.text.x = element_text(angle = 30, hjust = 1)) +
-  scale_y_continuous(labels = scales::percent) +
-  scale_fill_manual(values = c("#332288", "#6699CC", "#88CCEE", "#44AA99", "#117733", "#999933", "#DDCC77", "#661100", "#CC6677", "#AA4466", "#882255", "#AA4499", "orange"))
-
-png(filename = "~/FFPE/analysis/figures/biotype_composition.png", width = 2000, height = 1000, res = 200)
-print(p)
-dev.off()
-
-```
-
-
 ## Analysis
 
+  1. Normalization by variance stabilizing transformation
+  2. PCA dimensionality reduction
+  3. UMAP dimensionality reduction
+  4. Clustering (FindNeighbors + FindClusters)
 
 ```{r normalization}
 
@@ -110,22 +67,43 @@ se <- se %>% SCTransform() %>%
 
 ```
 
-```{r dimplot}
+UMAP without integration
 
-DimPlot(se)
+```{r dimplot, fig.width = 8, fig.height = 4}
+
+p1 <- DimPlot(se, group.by = "sample_id")
+p2 <- DimPlot(se)
+p1 - p2
 
 ```
 
-## Harmony
 
-```{r harmony, fig.width=10, fig.height=10}
+Align images 
 
+```{r}
 se <- LoadImages(se, time.resolve = FALSE)
+
+# Apply simple rigid transformations to images
 se <- WarpImages(se, transforms = list("1" = list(angle = 60), 
                                        "2" = list(shift.x = -50, shift.y = 50), 
                                        "5" = list(angle = -10), 
                                        "6" = list(angle = 20), 
                                        "7" = list(angle = 25)))
+```
+
+```{r, fig.width=8, fig.height=6}
+
+ImagePlot(se, method="raster")
+
+```
+
+
+## Harmony
+***
+
+Integration with harmony
+
+```{r harmony, fig.width=10, fig.height=10}
 
 library(harmony)
 se <- RunHarmony(se, group.by.vars = "date", dims.use = 1:50, assay.use = "SCT")
@@ -136,30 +114,23 @@ se <- RunUMAP(se, dims = 1:50, reduction = "harmony", n.components = 3, reductio
 
 ```
 
-```{r rgb}
+Visualize RGB encoded spots
 
-#se <- ManualAnnotation(se)
-#se.subset <- SubsetSTData(se, expression = labels %in% "Default")
-#se.subset <- SubsetSTData(se, expression = nFeature_RNA > 100)
-p <- ST.DimPlot(se.subset, dims = -c(1:3), reduction = "umap.3d", blend = T, pt.size = 1.2, show.sb = F, ncol = 7, custom.theme = theme(plot.margin = margin(0,0,0,0, "cm"), strip.text = element_blank()))
+```{r rgb, fig.width=12, fig.height=3}
+
+p <- ST.DimPlot(se, dims = -c(1:3), reduction = "umap.3d", blend = T, pt.size = 1.2, show.sb = F, ncol = 7, custom.theme = theme(plot.margin = margin(0,0,0,0, "cm"), strip.text = element_blank()))
 p
-
-for (i in 1:7) {
-  png(file = paste0("../figures/suppl_fig_X/RGBs/RGB_plot_section_", i, ".png"), width = 1000, height = 1000, res = 300)
-  p <- ST.DimPlot(se.subset, dims = -c(1:3), reduction = "umap.3d", blend = T, indices = i, pt.size = 1.2, show.sb = F, ncol = 7, custom.theme = theme(plot.margin = margin(0,0,0,0, "cm"), plot.title = element_blank(), strip.text = element_blank()))
-  print(p)
-  dev.off()
-}
-
+  
 ```
 
 ```{r umap, fig.width=14, fig.height=5}
 
 p <- DimPlot(se, reduction = "umap.harmony", split.by = "date")
 p
-ggsave(plot = p, filename = "../figures/suppl_fig_X/UMAP_clusters.pdf", width = 15, height = 5)
 
 ```
+
+Relative composition of clusters by sample
 
 ```{r umap, fig.width=14, fig.height=5}
 
@@ -175,7 +146,7 @@ p <- ggplot(gg) +
   coord_flip() +
   scale_y_reverse() +
   theme_minimal()
-ggsave(plot = p, filename = "../figures/suppl_fig_X/clusters_distribution.pdf", width = 15, height = 3)
+p
 
 ```
 
@@ -198,12 +169,27 @@ p2 <- ggplot() +
   labs(y = "UMIs", x = "") +
   guides(fill = F, color = F)
 p3 <- p1 / p2
-ggsave(plot = p3, filename = "../figures/suppl_fig_X/QC_plot.pdf", width = 16, height = 9)
+p3
 
 ```
 
+## Date
+***
 
+```{r date}
 
+date()
+
+```
+
+## Session
+***
+
+```{r}
+
+sessionInfo()
+
+```
 
 
 

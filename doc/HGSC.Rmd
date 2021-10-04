@@ -25,17 +25,17 @@ library(dplyr)
 ## Prep data
 ***
 
-Here we'll load a high resolution version of the original images (30% of the full image size).
-
 ```{r read_input}
 
-samples <- list.files(path = "../data/HGSC/", pattern = "filtered_feature", recursive = TRUE, full.names = TRUE)
-imgs <- list.files(path = "../data/HGSC/", pattern = "hires_image", recursive = TRUE, full.names = TRUE)
-spotfiles <- list.files(path = "../data/HGSC/", pattern = "tissue_positions", recursive = TRUE, full.names = TRUE)
-json <- list.files(path = "../data/HGSC/", pattern = "scalefactors", recursive = TRUE, full.names = TRUE)
+samples <- list.files(path = "../data/HGSC", pattern = "filtered_feature", recursive = TRUE, full.names = TRUE)
+imgs <- list.files(path = "../data/HGSC", pattern = "hires_image", recursive = TRUE, full.names = TRUE)
+spotfiles <- list.files(path = "../data/HGSC", pattern = "tissue_positions", recursive = TRUE, full.names = TRUE)
+json <- list.files(path = "../data/HGSC", pattern = "scalefactors", recursive = TRUE, full.names = TRUE)
 
 infoTable <- data.frame(samples, imgs, spotfiles, json, 
                         sample_id = paste0("sample_", 1:4),
+                        site = c("HGSC_section1", "HGSC_section2", "HGSC_section3", "HGSC_section4"),
+                        labels = c("site_1", "site_1", "site_2", "site_2"),
                         stringsAsFactors = FALSE)
 
 se.ID103 <- InputFromTable(infoTable)
@@ -117,17 +117,23 @@ se.ID103 <- ManualAlignImages(se.ID103, type = "raw", edges = FALSE)
 ## NNMF
 ***
 
+Run non-negative matrix factorization.
+
 ```{r NMF, eval=FALSE}
 
 se.ID103 <- RunNMF(se.ID103, nfactors = 15)
 
 ```
 
-### Pathway analysis
+### Functional Enrichment Analysis (FEA)
+
+Here we select the top contributing genes for each factor using a simple mean + N*SD threshold. 
+Top contributing genes are selected from the feature loadings of the NMF dimensionality reduction object. 
+For each feature loading vector `vals`, the values are first log transformed, then any non-finite values are 
+removed to produce a new vector `logvals`. 
+Thereafter, genes with a value higher than mean(logvals) + 1.645*sd(logvals) are defined as top contributing genes.
 
 ```{r nmf_pathways}
-
-se.ID103 <- readRDS("../R_objects/se.ID103")
 
 # inflexion point selection
 top.genes <- lapply(1:13, function(i) {
@@ -137,6 +143,13 @@ top.genes <- lapply(1:13, function(i) {
   thr <- mean(logvals) + 1.645*sd(logvals)
   names(logvals[logvals > thr])
 })
+
+```
+
+FEA is conducted using gprofiler2 and the Gene Ontology : Biological Processes (GO:BP) database as well 
+as the cancer hallmark pathways from MSigDB.
+
+```{r FEA}
 
 pathways <- lapply(seq_along(top.genes), function(i) {
   gset <- top.genes[[i]]
@@ -195,6 +208,100 @@ ggplot() +
   labs(fill = "", x = "")
 
 ```
+
+## Code for suppl. fig. 12
+***
+
+```{r violin_plots}
+
+gg <- data.frame(unique_genes = se.ID103$nFeature_RNA, UMIs = se.ID103$nCount_RNA, site = se.ID103$site, sample = se.ID103$label)
+
+p1 <- ggplot(gg, aes(sample, fill = site)) +
+  geom_violin(aes(sample, unique_genes)) +
+  geom_boxplot(aes(sample, unique_genes), width = 0.1) +
+  labs(x = "") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(hjust = 1, angle = 45))
+p2 <- ggplot(gg, aes(sample, fill = site)) +
+  geom_violin(aes(sample, UMIs)) +
+  geom_boxplot(aes(sample, UMIs), width = 0.1) +
+  labs(x = "") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(hjust = 1, angle = 45))
+
+p.vln <- cowplot::plot_grid(p1, p2)
+p.vln
+
+```
+
+```{r}
+
+umis1 <- se.ID103@assays$RNA@counts[, se.ID103$label %in% c("HGSC_section1")]
+umis2 <- se.ID103@assays$RNA@counts[, se.ID103$label %in% c("HGSC_section2")]
+gene_attr_siteA <- data.frame(s1 = log10(rowSums(umis1) + 1), s2 = log10(rowSums(umis2) + 1))
+
+umis1 <- se.ID103@assays$RNA@counts[, se.ID103$label %in% c("HGSC_section3")]
+umis2 <- se.ID103@assays$RNA@counts[, se.ID103$label %in% c("HGSC_section4")]
+gene_attr_siteB <- data.frame(s1 = log10(rowSums(umis1) + 1), s2 = log10(rowSums(umis2) + 1))
+
+umis1 <- se.ID103@assays$RNA@counts[, se.ID103$label %in% c("HGSC_section1", "HGSC_section2")]
+umis2 <- se.ID103@assays$RNA@counts[, se.ID103$label %in% c("HGSC_section3", "HGSC_section4")]
+gene_attr_siteAvB <- data.frame(s1 = log10(rowSums(umis1) + 1), s2 = log10(rowSums(umis2) + 1))
+
+```
+
+```{r fig.width=12, fig.height=5}
+p1 <- ggplot() +
+  geom_point(data = gene_attr_siteA, aes(s1, s2)) +
+  geom_smooth(data = gene_attr_siteA, aes(s1, s2), method = lm) +
+  labs(x = "log10(section_1 counts + 1)", y = "log10(section_2 counts + 1)", title = "") +
+  ggpubr::stat_cor(data = gene_attr_siteA, aes(s1, s2)) +
+  theme_minimal()
+
+p2 <- ggplot() +
+  geom_point(data = gene_attr_siteB, aes(s1, s2)) +
+  geom_smooth(data = gene_attr_siteB, aes(s1, s2), method = lm) +
+  labs(x = "log10(section_3 counts + 1)", y = "log10(section_4 counts + 1)", title = "") +
+  ggpubr::stat_cor(data = gene_attr_siteB, aes(s1, s2)) +
+  theme_minimal()
+
+p3 <- ggplot() +
+  geom_point(data = gene_attr_siteAvB, aes(s1, s2)) +
+  geom_smooth(data = gene_attr_siteAvB, aes(s1, s2), method = lm) +
+  labs(x = "log10(site_1 counts + 1)", y = "log10(site_2 counts + 1)", title = "") +
+  ggpubr::stat_cor(data = gene_attr_siteAvB, aes(s1, s2)) +
+  theme_minimal()
+
+p.cor <- cowplot::plot_grid(p1, p2, p3, ncol = 3)
+p.cor
+
+```
+
+Combine plots 
+
+```{r, fig.width=12, fig.height=8}
+p <- cowplot::plot_grid(p.vln, p.cor, ncol = 1) 
+p
+```
+
+## Code for suppl. fig. 13
+***
+
+Spatial distribution
+
+```{r, fig.width=18, fig.height=12}
+ST.DimPlot(se.ID103, reduction = "NMF", center.zero = FALSE, dims = 1:5, grid.ncol = 5, cols = viridis::magma(n = 9) %>% rev(), show.sb = F)
+```
+
+Gene contribution
+
+```{r, fig.width=12, fig.height=6}
+plots <- lapply(1:5, function(f) {
+  FactorGeneLoadingPlot(se.ID103, factor = f, topn = 10)
+})
+cowplot::plot_grid(plotlist = plots, ncol = 5)
+```
+
 
 ## Date
 ***

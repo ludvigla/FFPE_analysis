@@ -16,16 +16,22 @@ library(dplyr)
 library(Seurat)
 ```
 
-```{r load_data}
-samples <- list.files("../data/kidneyorganoid", pattern = "raw_feature", recursive = T, full.names = T)
-imgs <- list.files("../data/kidneyorganoid", pattern = "small", recursive = T, full.names = T)
-spotfiles <- list.files("../data/kidneyorganoid", pattern = "tissue_positions_list", recursive = T, full.names = T)
+# Prep data
+***
 
-infoTable <- data.frame(samples, imgs, spotfiles, 
+Prepare spaceranger output and load into a Seurat object.
+
+```{r load_data}
+samples <- list.files("../data/kidneyorganoid", pattern = "filtered_feature_bc_matrix.h5", recursive = T, full.names = T)
+imgs <- list.files("../data/kidneyorganoid", pattern = "tissue_hires_image.png", recursive = T, full.names = T)
+spotfiles <- list.files("../data/kidneyorganoid", pattern = "tissue_positions_list.csv", recursive = T, full.names = T)
+json <- list.files("../data/kidneyorganoid", pattern = "scalefactors_json.json", recursive = T, full.names = T)
+
+infoTable <- data.frame(samples, imgs, spotfiles, json,
                         sample_id = paste0("sample_", 1:3), 
                         stringsAsFactors = F)
 
-se <- InputFromTable(infoTable, scaleVisium = 0.3, min.spot.feature.count = 500, min.gene.spots = 10)
+se <- InputFromTable(infoTable)
 
 ```
 
@@ -46,7 +52,8 @@ se.filtered <- se[keep.genes, ]
 
 ```
 
-## Find isolated islets
+## Load images
+***
 
 ```{r}
 
@@ -54,14 +61,30 @@ se.filtered <- LoadImages(se.filtered, time.resolve = FALSE)
 
 ```
 
-```{r selection, eval=FALSE}
+## Find isolated islets
+***
 
-se.filtered <- ManualAnnotation(se.filtered)
-se.filtered$organoid <- se.filtered$labels
+This was done by manual labelling of spots from each organoid. Manual labelling can be done with
+STUtility using `ManualAnnotation()`.
+
+```{r selection, eval=FALSE, fig.width=8, fig.height=8}
+
+organoid <- read.table("../data/kidneyorganoid/organoid_selection.txt")
+se.filtered$organoid <- organoid[rownames(se.filtered@meta.data), "organoid"]
+#se.filtered <- ManualAnnotation(se.filtered)
+#se.filtered$organoid <- se.filtered$labels
+
+ST.FeaturePlot(se.filtered, features = "organoid", ncol = 2)
 
 ```
 
 ## Crop data
+***
+
+Here we can use the `CropImages()` function to crop out each organoid into a new dataset. 
+
+Note that if you want to work with higher resolution cropped images, you will need to use higher 
+resolution versions of the HE images. The raw HE images are not available in this repo. 
 
 ```{r crop}
 
@@ -103,12 +126,6 @@ se.cropped.list <- lapply(seq_along(se.cropped.list), function(i) {
 })
 merged.data <- MergeSTData(x = se.cropped.list[[1]], y = se.cropped.list[2:length(se.cropped.list)])
 
-saveRDS(merged.data, "../R_objects/kidney.organoids.se")
-```
-
-```{r load_merged_data}
-merged.data <- readRDS("../R_objects/kidney.organoids.se")
-merged.data@assays$RNA@counts <- merged.data@assays$RNA@data
 ```
 
 Subset organoids
@@ -119,50 +136,23 @@ subset.merged.data <- SubsetSTData(merged.data, expression = organoid %in% paste
 
 ```
 
+```{r, fig.width=8, fig.height=8}
+
+ImagePlot(subset.merged.data, method = "raster")
+
+```
+
+
 Analysis
 
 ```{r analysis}
 
 subset.merged.data <- subset.merged.data %>% 
-  SCTransform() %>%
+  SCTransform(return.only.var.genes = FALSE) %>%
   RunPCA() %>%
   RunUMAP(dims = 1:20) %>%
   FindNeighbors(reduction = "pca", dims = 1:20) %>%
-  FindClusters()
-
-subset.merged.data <- subset.merged.data %>% 
   FindClusters(resolution = 0.3)
-
-```
-
-```{r, fig.width=6.8, fig.height=10}
-
-s <- data.frame(organoid = subset.merged.data$organoid, sample = GetStaffli(subset.merged.data)@meta.data$sample)
-#s <- subset(s, organoid %in% paste0("Org", c(1:4, 8:10)))
-s <- s[!duplicated(s), ] %>%
-  arrange(factor(organoid, levels = paste0("Org", c(1:4, 8:10))))
-
-pdf(file = "../figures/suppl_figure_XXXX/HE_organoids_kidney.pdf", width = 4, height = 8)
-#ImagePlot(se.cropped, indices = s$sample, method = "raster", ncols = 4, annotate = F)
-p.list <- lapply(as.integer(s$sample), function(i) {
-  FeatureOverlay(subset.merged.data, features = "seurat_clusters", 
-               sampleids = i,
-               pt.size = 3,
-               sample.label = F, show.sb = F,
-               ncols.samples = 1,
-               custom.theme = theme(
-                 legend.position = "none", 
-                 plot.margin = margin(0.1,0.1,0.1,0.1, "cm"),
-                 plot.title = element_blank()
-               )) 
-})
-cowplot::plot_grid(plotlist = p.list, ncol = 3)
-dev.off()
-
-#subset.merged.data <- SubsetSTData(merged.data, expression = organoid %in% paste0("Org", c(1:4, 8:10)))
-#subset.merged.data$organoid <- factor(subset.merged.data$organoid, levels = paste0("Org", c(1:4, 8:10)))
-#p <- VlnPlot(subset.merged.data, features = "nFeature_RNA", group.by = "organoid")
-#ggsave(plot = p, filename = "../figures/suppl_figure_XXXX/vlnplot_kidney.pdf", width = 14, height = 4)
 
 ```
 
@@ -176,14 +166,14 @@ sapply(paste0("Org", c(1, 3:4, 8:10)), function(org) {
 
 ```
 
-```{r, fig.width=8, fig.height=8}
+Plots for suppl. fig. 11
+
+```{r, fig.width=8, fig.height=4}
 
 subset.merged.data$organoid <- factor(subset.merged.data$organoid, levels = paste0("Org", c(1:4, 8:10)))
-p <- DimPlot(subset.merged.data, group.by = "organoid", cols = c("#332288", "#88CCEE", "#117733", "#DDCC77", "#CC6677","#AA4499"), pt.size = 1.3)
-ggsave(plot = p, filename = "../figures/suppl_figure_XXXX/UMAP_kidney.pdf", width = 5, height = 4)
-
-p <- DimPlot(subset.merged.data, group.by = "seurat_clusters", pt.size = 1.3)
-ggsave(plot = p, filename = "../figures/suppl_figure_XXXX/UMAP_clusters_kidney.pdf", width = 5, height = 4)
+p1 <- DimPlot(subset.merged.data, group.by = "organoid", cols = c("#332288", "#88CCEE", "#117733", "#DDCC77", "#CC6677","#AA4499"), pt.size = 1.3)
+p2 <- DimPlot(subset.merged.data, group.by = "seurat_clusters", pt.size = 1.3)
+p1 - p2
 
 ```
 
@@ -192,16 +182,10 @@ ggsave(plot = p, filename = "../figures/suppl_figure_XXXX/UMAP_clusters_kidney.p
 de.markers <- FindAllMarkers(subset.merged.data)
 top10 <- de.markers %>%
   group_by(cluster) %>%
-  filter(avg_logFC > 0) %>%
+  filter(avg_log2FC > 0, p_val_adj < 0.01) %>%
   top_n(wt = -p_val_adj, n = 10)
 p <- DoHeatmap(subset.merged.data, features = top10$gene)
-ggsave(plot = p, filename = "../figures/suppl_figure_XXXX/DE_heatmap_kidney.pdf", width = 7, height = 6)
-
-```
-
-```{r plot_data, fig.height=12, fig.width=12}
-
-FeatureOverlay(se.cropped, features = "nFeature_RNA", sampleids = 1:22, ncols.samples = 5, show.sb = FALSE)
+p
 
 ```
 
@@ -209,108 +193,21 @@ QC features
 
 ```{r}
 
-se.cropped <- SetIdent(se.cropped, value = "organoid")
-VlnPlot(se.cropped, features = "nFeature_RNA")
+VlnPlot(subset.merged.data, features = "nFeature_RNA", group.by = "organoid")
 
 ```
 
-### Run analysis
+## Date
+***
 
-```{r analysis}
-
-se.cropped <- se.cropped %>% 
-  SCTransform() %>%
-  RunPCA() %>%
-  RunUMAP(dims = 1:20) %>%
-  FindNeighbors(reduction = "pca", dims = 1:20) %>%
-  FindClusters()
-
+```{r date}
+date()
 ```
 
+## Session
+***
 
-```{r, fig.width=12, fig.height=12}
-
-p1 <- DimPlot(se.cropped, group.by = "organoid")
-p2 <- DimPlot(se.cropped, group.by = "seurat_clusters")
-p3 <- FeaturePlot(se.cropped, features = "nFeature_RNA")
-p4 <- FeaturePlot(se.cropped, features = "nCount_RNA")
-cowplot::plot_grid(p1, p2, p3, p4)
-
+```{r session}
+sessionInfo()
 ```
 
-```{r org1, fig.width=8, fig.height=6}
-
-organoids <- paste0("Org", 1:6)
-se.list <- lapply(organoids, function(org) {
-  se.Org <- SubsetSTData(se.cropped, expression = organoid %in% org)
-  se.Org <- se.Org %>%
-    SCTransform(return.only.var.genes = FALSE) %>%
-    RunPCA() %>%
-    RunNMF()
-  return(se.Org)
-})
-
-# Clustering
-se.list <- lapply(seq_along(se.list), function(i) {
-  se.Org <- se.list[[i]]
-  se.Org <- se.Org %>%
-    RunUMAP(dims = 1:20, reduction = "NMF") %>%
-    FindNeighbors(dims = 1:20, reduction = "NMF") %>%
-    FindClusters(resolution = 0.6)
-  return(se.Org)
-})
-
-DimPlot(se.list[[3]])
-
-FeatureOverlay(se.list[[4]], features = "seurat_clusters", sampleids = 1:4, ncols.samples = 2, show.sb = F, pt.size = 3)
-
-```
-
-```{r de, fig.width=18, fig.height=4}
-i <- 1
-de.markers <- FindAllMarkers(se.list[[i]])
-
-top10 <- de.markers %>% 
-  group_by(cluster) %>%
-  filter(avg_logFC > 0) %>%
-  top_n(n = 10, wt = p_val_adj)
-
-jpeg(filename = "~/FFPE/organoids_200820/plots/DE_heatmap.jpeg", width = 2000, height = 2000, res = 150)
-DoHeatmap(se.list[[i]], features = top10$gene) %>% print()
-dev.off()
-
-#DotPlot(object = se.list[[i]], features = top10$gene) +
-#  theme(axis.text.x = element_text(angle = 60, vjust = 0.5)) +
-#  scale_color_gradientn(colours = rev(RColorBrewer::brewer.pal(n = 11, name = "RdBu")))
-
-```
-
-Pathway analysis
-
-```{r pathways, fig.width=10, fig.height=5}
-
-pathways <- de.markers %>%
-  filter(avg_logFC > 0, p_val_adj < 0.01) %>%
-  split(.$cluster) %>%
-  lapply(function(set) {
-    gost(query = set$gene, sources = "GO:BP", organism = "hsapiens")$result %>%
-      top_n(n = 10, wt = -p_value)
-  })
-pathways <- do.call(rbind, lapply(seq_along(pathways), function(i) {
-  pathway <- pathways[[i]]
-  pathway$cluster <- i - 1
-  return(pathway)
-}))
-
-# Plot pathways
-pathways$GeneRatio <- pathways$intersection_size/pathways$query_size
-p <- ggplot() +
-  geom_point(data = pathways, aes(reorder(term_name, -log10(p_value)), -log10(p_value), fill = -log10(p_value), size = GeneRatio), shape = 21) +
-  coord_flip() +
-  theme_minimal() +
-  scale_fill_gradientn(colours = RColorBrewer::brewer.pal(n = 9, name = "Reds")) +
-  labs(x = "term") +
-  facet_wrap(~cluster, ncol = 1, scales = "free_y")
-ggsave(p, filename = "~/FFPE/organoids_200820/plots/pathway_analysis.pdf", width = 10, height = 10)
-
-```

@@ -20,14 +20,16 @@ library(dplyr)
 # Load data
 ***
 
+Prepare spaeranger output files and load data into Seurat object.
+
 ```{r read_input}
 
-samples <- list.files("../data/Covid19/", pattern = "filtered", recursive = T, full.names = T)
-imgs <- list.files("../data/Covid19/", pattern = "small.jpg", recursive = T, full.names = T)
-spotfiles <- list.files("../data/Covid19/", pattern = "tissue_positions", recursive = T, full.names = T)
-json <- list.files("../data/Covid19/", pattern = "scalefactors", recursive = T, full.names = T)
+samples <- list.files("../data/lung_SARS-CoV-2", pattern = "filtered", recursive = T, full.names = T)
+imgs <- list.files("../data/lung_SARS-CoV-2", pattern = "small", recursive = T, full.names = T)
+spotfiles <- list.files("../data/lung_SARS-CoV-2", pattern = "tissue_positions", recursive = T, full.names = T)
+json <- list.files("../data/lung_SARS-CoV-2", pattern = "scalefactors", recursive = T, full.names = T)
 
-infoTable <- data.frame(samples, imgs, spotfiles, 
+infoTable <- data.frame(samples, imgs, spotfiles, json,
                         sample_id = c("sample_1", "sample_2"), 
                         stringsAsFactors = F)
 
@@ -101,8 +103,6 @@ p2 <- ggplot(gg, aes(sample, UMIs, fill = sample)) +
   theme_minimal()
 p1 - p2
 
-ggsave(filename = "../figures/suppl_fig_XX/QC_violin.pdf", width = 10, height = 4)
-
 ```
 
 ## Analysis of FFPE section
@@ -120,7 +120,6 @@ se <- se %>%
   FindNeighbors(dims = 1:15, reduction = "NMF") %>%
   FindClusters(resolution = 0.6) %>%
   RunUMAP(dims = 1:15, reduction = "NMF", n.epochs = 1e3)
-
   
 ```
 
@@ -132,18 +131,7 @@ library(zeallot)
 c(df1, df2) %<-% SummarizeAssocFeatures(se, features.return = 6)
 p <- swne::ggHeat(df2[nrow(df2):1, ], rescaling = "column") +
   scale_fill_gradientn(colors = viridis::magma(n = 9) %>% rev())
-
-pdf(file = "~/FFPE/analysis/figures/suppl_figure_XXX/factors_overview.pdf", width = 10, height = 12)
-print(p)
-dev.off()
-
-c(df1, df2) %<-% SummarizeAssocFeatures(se, features.return = 3)
-p <- swne::ggHeat(df2[nrow(df2):1, ], rescaling = "column") +
-  scale_fill_gradientn(colors = viridis::magma(n = 9) %>% rev())
-
-pdf(file = "~/FFPE/analysis/figures/suppl_figure_XXX/factors_overview_few.pdf", width = 10, height = 6)
-print(p)
-dev.off()
+p
 
 ```
 
@@ -160,134 +148,53 @@ se.cropped.list <- lapply(crop.windows, function(crop.w) {
   CropImages(se, crop.geometry.list = crop.w, xdim = 2e3)
 })
 
-# Export HE images
-jpeg(filename = "~/FFPE/Covid_zoom_in.jpeg", width = 4000, height = 2000, res = 300)
-ImagePlot(se.cropped.list[[1]], method = "raster", annotate = F)
-dev.off()
-
 ```
+
+Display images
+
+```{r}
+ImagePlot(se.cropped.list[[1]], method = "raster")
+ImagePlot(se.cropped.list[[2]], method = "raster")
+```
+
+
+Example gene
 
 ```{r, fig.width=10, fig.height=5}
 
 FeatureOverlay(se.cropped.list[[1]], features = "PIGR", sampleids = 1:2, ncols.features = 1,
-               ncols.samples = 2, show.sb = F, pt.size = 8, value.scale = "all")
+               ncols = 2, show.sb = F, pt.size = 8, value.scale = "all")
 
 ```
 
 Main figure 4
 
-```{r}
+```{r fig.width=12, fig.height=4}
 
-for (i in 1:15) {
-  max_val <- max(max(se.cropped.list[[1]]@reductions$NMF@cell.embeddings[, paste0("factor_", i)]),
-             max(se.cropped.list[[2]]@reductions$NMF@cell.embeddings[, paste0("factor_", i)]))
+i <- 1
+max_val <- max(max(se.cropped.list[[1]]@reductions$NMF@cell.embeddings[, paste0("factor_", i)]),
+           max(se.cropped.list[[2]]@reductions$NMF@cell.embeddings[, paste0("factor_", i)]))
 p1 <- FeatureOverlay(se.cropped.list[[1]], features = paste0("factor_", i), sample.label = F,
-                     max.cutoff = "q99", pt.size = 9,
+                     max.cutoff = "q99", pt.size = 4.5,
                      value.scale = c(0, max_val),
-                     cols = c("lightgray", cols[4]),
-                     add.alpha = T, custom.theme = th)
+                     cols = c("lightgray", "yellow"),
+                     add.alpha = T, show.sb = FALSE)
 p2 <- FeatureOverlay(se.cropped.list[[2]], features = paste0("factor_", i), sample.label = F,
-                     max.cutoff = "q99", pt.size = 7,
+                     max.cutoff = "q99", pt.size = 4,
                      value.scale = c(0, max_val),
-                     cols = c("lightgray", cols[4]),
-                     add.alpha = T, custom.theme = th)
+                     cols = c("lightgray", "yellow"),
+                     add.alpha = T, show.sb = FALSE)
 p3 <- FactorGeneLoadingPlot(se.cropped.list[[1]], factor = i, topn = 20)
 
-ggsave(filename = paste0("../figures/suppl_figure_XXX/factors/factor_", i, ".pdf"), 
-       plot = cowplot::plot_grid(p1, p2, p3, ncol = 1, rel_heights = c(1, 1, 1)), 
-       height = 18, width = 6)
-}
-
-markers <- c("CXCL13", "CCL19", "IGHA1", "IGHA2", "IGHG3", "IGHG3", "IGHM", "LTF",
-             "TRAC", "TRBC1", "TRBC2", "MS4A1", "IL7R", "FDCSP", "CR2", "TMPRSS2")
-
-#se.cropped.list <- lapply(se.cropped.list, function(se) {
-#  SCTransform(se)
-#})
-
-for (gene in markers) {
-  max_val <- max(max(se.cropped.list[[1]]@assays$SCT@data[gene, ]),
-             max(se.cropped.list[[2]]@assays$SCT@data[gene, ]))
-p1 <- FeatureOverlay(se.cropped.list[[1]], features = gene, sample.label = F,
-                     max.cutoff = "q99", pt.size = 9,
-                     value.scale = c(0, max_val),
-                     cols = c("lightgray", cols[4]),
-                     add.alpha = T, custom.theme = th)
-p2 <- FeatureOverlay(se.cropped.list[[2]], features = gene, sample.label = F,
-                     max.cutoff = "q99", pt.size = 7,
-                     value.scale = c(0, max_val),
-                     cols = c("lightgray", cols[4]),
-                     add.alpha = T, custom.theme = th)
-
-ggsave(filename = paste0("../figures/suppl_figure_XXX/markers/", gene, ".pdf"), 
-       plot = cowplot::plot_grid(p1, p2, ncol = 1, rel_heights = c(1, 1)), 
-       height = 12, width = 6)
-}
-
-markers <- "TMPRSS2"
-for (gene in markers) {
-  max_val <- max(max(se.cropped.list[[1]]@assays$SCT@data[gene, ]),
-             max(se.cropped.list[[2]]@assays$SCT@data[gene, ]))
-  se.sbst1 <- SubsetSTData(se.cropped.list[[1]], expression = TMPRSS2 > 0)
-  se.sbst2 <- SubsetSTData(se.cropped.list[[2]], expression = TMPRSS2 > 0)
-p1 <- FeatureOverlay(se.sbst1, features = gene, sample.label = F,
-                     pt.size = 9,
-                     value.scale = c(0, max_val),
-                     cols = RColorBrewer::brewer.pal(n = 9, name = "Spectral") %>% rev(),
-                     add.alpha = F, custom.theme = th)
-p2 <- FeatureOverlay(se.sbst2, features = gene, sample.label = F,
-                     pt.size = 7,
-                     value.scale = c(0, max_val),
-                     cols = RColorBrewer::brewer.pal(n = 9, name = "Spectral") %>% rev(),
-                     add.alpha = F, custom.theme = th)
-
-ggsave(filename = paste0("../figures/suppl_figure_XXX/markers/", gene, ".pdf"), 
-       plot = cowplot::plot_grid(p1, p2, ncol = 1, rel_heights = c(1, 1)), 
-       height = 12, width = 6)
-}
+cowplot::plot_grid(p1, p2, p3, ncol = 3, rel_widths = c(1, 1, 1))
 
 ```
 
-Export factors
-
-```{r }
-
-top.drivers <- se.cropped@reductions$NMF@feature.loadings
-y <- do.call(rbind, lapply(1:ncol(top.drivers), function(i) {
-  x <- sort(top.drivers[, i], decreasing = T)[1:100]
-  data.frame(weight = x, gene = names(x), factor = paste0("factor_", i))
-}))
-library(openxlsx)
-
-for (i in 1:15) {
-  jpeg(filename = paste0("~/FFPE/analysis/figures/suppl_fig_XX/factors/factor_", i, ".jpeg"), width = 4000, height = 2000, res = 300)
-  p1 <- FeatureOverlay(se.cropped.list[[1]], features = paste0("factor_", i), 
-                 sampleids = 1, ncols.features = 1, ncols.samples = 1, sample.label = F,
-                 show.sb = F, pt.size = 7, value.scale = "all", add.alpha = T, 
-                 max.cutoff = "q99", custom.theme = theme(plot.margin = margin(0,0,0,0, "cm"), legend.position = "top"))
-  p2 <- FeatureOverlay(se.cropped.list[[2]], features = paste0("factor_", i), 
-                 sampleids = 1, ncols.features = 1, ncols.samples = 1, sample.label = F,
-                 show.sb = F, pt.size = 7, value.scale = "all", add.alpha = T, 
-                 max.cutoff = "q99", custom.theme = theme(plot.margin = margin(0,0,0,0, "cm"), legend.position = "top"))
-  print(p1 - p2)
-  dev.off()
-}
-
-#1dat <- split(y, y$factor)
-#1wb <- createWorkbook()
-#1Map(function(data, name){
-#1    addWorksheet(wb, name)
-#1    writeData(wb, name, data)
-#1}, dat, names(dat))
-#1saveWorkbook(wb, file = "../figures/suppl_fig_XX/factor_driving_genes.xlsx", overwrite = TRUE)
-
-
-```
 
 
 Single cell markers
 
-```{r }
+```{r}
 
 library(readxl)
 path <- "../data/lungcellmarkers/41586_2020_2922_MOESM6_ESM.xlsx"
@@ -310,7 +217,9 @@ GeneSets <- lapply(mylist, function(x) {
 
 Cor AUC with factors
 
-```{r, fig.width=3.5, fig.height=3}
+```{r fig.width=10, fig.height=8}
+
+library(AUCell)
 
 spots_rankings <- AUCell_buildRankings(se@assays$SCT@data, nCores = 7, plotStats = FALSE)
 cells_AUC <- AUCell_calcAUC(GeneSets, spots_rankings, aucMaxRank = ceiling(0.05 * nrow(spots_rankings)))
@@ -361,20 +270,22 @@ p <- ggplot(mm) +
         axis.text.x = element_text(angle = 30, hjust = 1, color = "black"),
         axis.text.y = element_text(color = "black"))
 
-ggsave(filename = "../figures/suppl_figure_XXX/cor_heatmap_factor_AUC_scores.pdf", width = 7, height = 7)
-png(filename = "../figures/suppl_figure_XXX/cor_heatmap_factor_AUC_scores..png", width = 2400, height = 2400, res = 300)
-print(p)
-dev.off()
+p
 
 ```
 
+## Date 
+***
 
-```{r, fig.width=6, fig.height=4}
-
-#se.cropped.list <- lapply(se.cropped.list, function(se) {
-#SCTransform(se)
-#})
-FeatureOverlay(se.cropped.list[[1]], features = c("CXCR4", "CCL21", "CCL19", "IL7R", "IL22", "IL23"), 
-               show.sb = F, pt.size = 4, add.alpha = T, palette = "Spectral", ncols.features = 3)
-
+```{r}
+date()
 ```
+
+## Session
+***
+
+```{r}
+sessionInfo()
+```
+
+

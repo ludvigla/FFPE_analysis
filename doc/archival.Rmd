@@ -1,5 +1,5 @@
 ---
-title: "Analysis of archival samples"
+title: "QC analysis of archival samples"
 author: "Ludvig Larsson"
 date: "11/25/2020"
 output: html_document
@@ -25,7 +25,14 @@ library(dplyr)
 ## Prep data
 ***
 
-Here we'll load a high resolution version of the original images (30% of the full image size).
+Assemble output files from spaceranger and load into a Seurat object.
+
+Sample information:
+
+V10F24-111_A1 = archival sample stored for 37 years
+V10F24-111_B1 = archival sample stored for 18 years
+V10F24-111_C1 = archival sample stored for 10 years
+V10F24-111_D1 = archival sample stored for 5 years
 
 ```{r read_input}
 
@@ -46,7 +53,7 @@ se <- InputFromTable(infoTable)
 ## Quality control
 ***
 
-The average number of unique genes per spot is around 1k but overall the data is very sparse.
+Summarize per sample quality metrics.
 
 ```{r qc}
 
@@ -67,119 +74,19 @@ qc.df
 
 ```
 
-```{r}
+Visualize quality metric distributions per sample: nFeature_RNA, nCount_RNA percent mitochondrial genes and percent ribosomal protein coding genes
+
+```{r fig.width=12, fig.height=5}
 
 se$age <- factor(se$age, levels = c("37y", "18y", "10y", "5y"))
-jpeg(filename = "~/FFPE/201026_cancer_human_archival/plots/violin_plot_qc.jpeg", width = 2000, height = 1000, res = 150)
-print(VlnPlot(se, features = c("nFeature_RNA", "nCount_RNA"), group.by = "age", pt.size = 0.5))
-dev.off()
+VlnPlot(se, features = c("nFeature_RNA", "nCount_RNA"), group.by = "age", pt.size = 0.5)
 
 mt.genes <- grep(pattern = "^MT-", x = rownames(se), value = T)
 ribo.genes <- grep(pattern = "^RPL|^RPS", x = rownames(se), value = T)
 se$percent.mito <- Matrix::colSums(se@assays$RNA@counts[mt.genes, ])/se$nFeature_RNA
 se$percent.ribo <- Matrix::colSums(se@assays$RNA@counts[ribo.genes, ])/se$nFeature_RNA
-jpeg(filename = "~/FFPE/201026_cancer_human_archival/plots/violin_plot_mito_ribo_content.jpeg", width = 2000, height = 1000, res = 150)
-print(VlnPlot(se, features = c("percent.mito", "percent.ribo"), group.by = "age", pt.size = 0.5) & scale_y_continuous(labels = scales::percent))
-dev.off()
 
-```
-
-## Filter
-***
-
-Remove mitochondrial protein coding genes and enrich for protein coding genes
-
-
-```{r filter, fig.width=14, fig.height=6}
-
-# Remove mitochondrial genes
-ensids <- read.table(file = "../data/annotation/GRCh38_genes.tsv", header = T, sep = "\t", stringsAsFactors = FALSE)
-bio.keep <- c("protein_coding", "TR_V_gene", "TR_D_gene", "TR_J_gene", "TR_C_gene", "IG_LV_gene", "IG_V_gene", "IG_J_gene", "IG_C_gene", "IG_D_gene")
-ensids <- subset(ensids, gene_biotype %in% bio.keep)
-mt.genes <- grep(pattern = "^MT-", x = rownames(se), value = TRUE)
-
-keep.genes <- setdiff(ensids$gene_name, mt.genes)
-se <- se[intersect(rownames(se), keep.genes), ]
-
-```
-
-## Normalize
-***
-
-```{r read_data, include=FALSE}
-se <- readRDS("../R_objects/se")
-```
-```{r normalize, eval=FALSE}
-
-se.split <- lapply(paste0("V10F24-111_", c("A", "B", "C", "D"), "1"), function(i) {
-  se <- SubsetSTData(se, expression = sample_id %in% i)
-  SCTransform(se, return.only.var.genes = FALSE)
-})
-
-```
-
-## Load images
-***
-
-```{r load_images, eval=FALSE}
-
-se.split <- lapply(se.split, function(se) {
-  LoadImages(se, time.resolve = FALSE, xdim = 2e3)
-})
-
-```
-
-
-## Run analysis
-***
-
-```{r analysis, eval=FALSE}
-
-se.split <- lapply(se.split, function(se) {
-  se <- se %>%
-    RunPCA() %>%
-    FindNeighbors(dims = 1:30, reduction = "pca") %>%
-    FindClusters() %>%
-    RunUMAP(dims = 1:30, reduction = "pca")
-})
-
-```
-
-DE analysis
-
-```{r de}
-
-de.markers <- FindAllMarkers(se.split[[4]])
-
-top10 <- de.markers %>% 
-  filter(p_val_adj < 0.01, avg_logFC > 0) %>%
-  group_by(cluster) %>%
-  top_n(n = 10, wt = -p_val_adj)
-  
-```
-
-
-```{r}
-
-se <- LoadImages(se, time.resolve = F, xdim = 2e3)
-jpeg(filename = "~/FFPE/201026_cancer_human_archival/plots/example_markers.jpeg", width = 4400, height = 4000, res = 300)
-FeatureOverlay(se.split[[4]], features = c("OGN", "C3", "PENK", "SERPINA1"), sample.label = F, ncols.features = 2,
-               cols = c("darkblue", "cyan", "yellow", "red", "darkred"), add.alpha = T,
-               custom.theme = theme(legend.position = "top", plot.margin = margin(0, 0, 0, 0, "cm"))) %>% print()
-dev.off()
-
-jpeg(filename = "~/FFPE/201026_cancer_human_archival/plots/clusters.jpeg", width = 2200, height = 2000, res = 300)
-FeatureOverlay(se.split[[4]], features = "seurat_clusters", sample.label = F, pt.size = 1.5,
-               custom.theme = theme(legend.position = "top", plot.margin = margin(0, 0, 0, 0, "cm"))) %>% print()
-dev.off()
-
-jpeg(filename = "~/FFPE/201026_cancer_human_archival/plots/heatmap.jpeg", width = 2200, height = 2000, res = 300)
-DoHeatmap(se.split[[4]], features = top10$gene) %>% print()
-dev.off()
-
-jpeg(filename = "~/FFPE/201026_cancer_human_archival/plots/UMAP.jpeg", width = 2200, height = 2000, res = 300)
-DimPlot(se.split[[4]], label = T, label.size = 10) %>% print()
-dev.off()
+VlnPlot(se, features = c("percent.mito", "percent.ribo"), group.by = "age", pt.size = 0.5) & scale_y_continuous(labels = scales::percent)
 
 ```
 

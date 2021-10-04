@@ -11,7 +11,7 @@ knitr::opts_chunk$set(echo = TRUE)
 
 # Load libraries
 
-NOTE: Make sure that you have sctransform v0.2.1 installed to reproduce the plots. Later version might change the normalization outcome.
+NOTE: Make sure that you have sctransform v0.2.1 installed to reproduce the plots. Later versions might change the normalization procedure and thereby the analyses.
 
 ```{r load_libs, warning=FALSE, message=FALSE}
 
@@ -25,7 +25,26 @@ library(harmony)
 # Load data
 ***
 
-Here we will include 7 FFPE coronal (mouse brain) section datasets for the analysis.
+Here we have included 7 fresh frozen (FF) and 7 FFPE mouse brain section datasets for the analysis.
+
+5 FF datasets needs to be downloaded from the 10x genomcis website: https://www.10xgenomics.com/resources/datasets
+
+These are named:
+Mouse Brain Section (Coronal)
+Mouse Brain Serial Section 1 (Sagittal-Anterior)
+Mouse Brain Serial Section 1 (Sagittal-Posterior)
+Mouse Brain Serial Section 2 (Sagittal-Anterior)
+Mouse Brain Serial Section 2 (Sagittal-Posterior)
+
+To be able to run this notebook you will have to download these datasets to the data/mousebrain directory of 
+this repo. You will also need to make sure that the datasets are ordered according to the "sample_id" column 
+of infoTable. Here's how the different datasets were named:
+
+FF1 = Mouse Brain Section (Coronal)
+FF2 = Mouse Brain Serial Section 1 (Sagittal-Anterior)
+FF3 = Mouse Brain Serial Section 1 (Sagittal-Posterior)
+FF4 = Mouse Brain Serial Section 2 (Sagittal-Anterior)
+FF5 = Mouse Brain Serial Section 2 (Sagittal-Posterior)
 
 ```{r read_input}
 
@@ -35,43 +54,29 @@ spotfiles <- list.files(path = "../data/mousebrain/", pattern = "tissue_position
 json <- list.files(path = "../data/mousebrain/", pattern = "scalefactors_json.json", recursive = T, full.names = T)
 
 infoTable <- data.frame(samples, imgs, spotfiles, json, 
-                        condition = c("normal", "normal", "normal", "normal", "normal",  "RU", "RU", "normal"),
-                        date = c("NA", "200925", "200925", "200925", "200925", "201016", "201016", "200513"), 
-                        sample_id = c("FF1", "FFPE1", "FFPE2", "FFPE3", "FFPE4", "FFPE5", "FFPE6", "FFPE7"), 
+                        condition = c("normal", "normal", "normal", "normal", "normal", "normal", "normal", "normal", "normal", "normal", "normal",  "RU", "RU", "normal"),
+                        date = c("NA", "NA", "NA", "NA", "NA", "NA", "NA", "200925", "200925", "200925", "200925", "201016", "201016", "200513"), 
+                        sample_id = c("FF1", "FF2", "FF3", "FF4", "FF5", "FF6", "FF7", "FFPE1", "FFPE2", "FFPE3", "FFPE4", "FFPE5", "FFPE6", "FFPE7"), 
                         stringsAsFactors = F)
-infoTable <- infoTable[c(8, 1:7), ]
 
 se <- InputFromTable(infoTable)
 
 ```
-load additional data
 
-```{r load_add}
+Get gene attributes
 
-se2 <- readRDS("~/STUtility/saved/se_object")
-se3 <- readRDS("~/10x/R_objects/se.list")[[1]]
+```{r, fig.width=12, fig.height=6}
 
-conv <- setNames(c("FF6", "FF7"), nm = c("Hippo_A", "Hippo_B"))
-se2$sample_id <- conv[se2$sample_id]
+# Load annotation table with gene biotype information
+ensids <- read.table("../data/annotation/mm10_genes.tsv", header = TRUE, stringsAsFactors = FALSE)
+rownames(ensids) <- ensids$gene_name
 
-conv <- setNames(c("FF2", "FF3", "FF4", "FF5"), nm = paste0("sample_", 1:4))
-se3$sample_id <- conv[se3$sample_id]
-
-```
-
-```{r, fig.width=10, fig.height=10}
-
-gene_attr_melt <- do.call(rbind, lapply(list(se, se2, se3), function(se) {
-  ensids <- read.table("../data/annotation/mm10_genes.tsv", header = TRUE, stringsAsFactors = FALSE)
-  rownames(ensids) <- ensids$gene_name
-  
-  gene_attr <- do.call(cbind, lapply(unique(se$sample_id), function(i) {
-    count = Matrix::rowSums(se@assays$RNA@counts[, se$sample_id %in% i])
-  }))
-  colnames(gene_attr) <- unique(se$sample_id)
-  gene_attr <- data.frame(gene = rownames(se), biotype = ensids[rownames(se), ]$gene_biotype, gene_attr)
-  gene_attr_melt <- reshape2::melt(gene_attr, measure.vars = colnames(gene_attr)[-c(1, 2)])
+gene_attr <- do.call(cbind, lapply(unique(se$sample_id), function(i) {
+  count = Matrix::rowSums(se@assays$RNA@counts[, se$sample_id %in% i])
 }))
+colnames(gene_attr) <- unique(se$sample_id)
+gene_attr <- data.frame(gene = rownames(se), biotype = ensids[rownames(se), ]$gene_biotype, gene_attr)
+gene_attr_melt <- reshape2::melt(gene_attr, measure.vars = colnames(gene_attr)[-c(1, 2)])
 
 # mt-genes
 mt.genes <- grep(pattern = "^mt-", x = gene_attr_melt$gene, value = T)
@@ -98,116 +103,23 @@ p <- ggplot(gene_attr.summarized, aes(x = variable, y = count, fill = biotype)) 
   scale_y_continuous(labels = scales::percent) +
   scale_fill_manual(values = c("#332288", "#6699CC", "#88CCEE", "#44AA99", "#117733", "#999933", "#DDCC77", "#661100", "#CC6677", "#AA4466", "#882255", "#AA4499", "orange"))
 
-```
-
-
-## Analysis
-
-
-```{r normalization}
-
-se <- se %>% SCTransform() %>%
-  RunPCA() %>%
-  RunUMAP(reduction = "pca", dims = 1:30) %>%
-  FindNeighbors(reduction = "pca", dims = 1:30) %>%
-  FindClusters()
-
-```
-
-```{r dimplot}
-
-DimPlot(se)
-
-```
-
-## Harmony
-
-```{r harmony, fig.width=10, fig.height=10}
-
-se <- LoadImages(se, time.resolve = FALSE)
-se <- WarpImages(se, transforms = list("1" = list(angle = 60), 
-                                       "2" = list(shift.x = -50, shift.y = 50), 
-                                       "5" = list(angle = -10), 
-                                       "6" = list(angle = 20), 
-                                       "7" = list(angle = 25)))
-
-library(harmony)
-se <- RunHarmony(se, group.by.vars = "date", dims.use = 1:50, assay.use = "SCT")
-se <- RunUMAP(se, reduction = "harmony", dims = 1:50, reduction.name = "umap.harmony")
-se <- FindNeighbors(se, dims = 1:50, reduction = "harmony")
-se <- se  %>% FindClusters(resolution = 0.8)
-se <- RunUMAP(se, dims = 1:50, reduction = "harmony", n.components = 3, reduction.name = "umap.3d")
-
-```
-
-```{r rgb}
-
-#se <- ManualAnnotation(se)
-#se.subset <- SubsetSTData(se, expression = labels %in% "Default")
-#se.subset <- SubsetSTData(se, expression = nFeature_RNA > 100)
-p <- ST.DimPlot(se.subset, dims = -c(1:3), reduction = "umap.3d", blend = T, pt.size = 1.2, show.sb = F, ncol = 7, custom.theme = theme(plot.margin = margin(0,0,0,0, "cm"), strip.text = element_blank()))
 p
 
-for (i in 1:7) {
-  png(file = paste0("../figures/suppl_fig_X/RGBs/RGB_plot_section_", i, ".png"), width = 1000, height = 1000, res = 300)
-  p <- ST.DimPlot(se.subset, dims = -c(1:3), reduction = "umap.3d", blend = T, indices = i, pt.size = 1.2, show.sb = F, ncol = 7, custom.theme = theme(plot.margin = margin(0,0,0,0, "cm"), plot.title = element_blank(), strip.text = element_blank()))
-  print(p)
-  dev.off()
-}
-
-```
-
-```{r umap, fig.width=14, fig.height=5}
-
-p <- DimPlot(se, reduction = "umap.harmony", split.by = "date")
-p
-ggsave(plot = p, filename = "../figures/suppl_fig_X/UMAP_clusters.pdf", width = 15, height = 5)
-
-```
-
-```{r umap, fig.width=14, fig.height=5}
-
-gg <- data.frame(cluster = se$seurat_clusters, experiment = se$date)
-gg <- gg %>%
-  group_by(experiment, cluster) %>%
-  summarize(count = n()) %>%
-  group_by(experiment) %>%
-  mutate(Freq = count/sum(count))
-
-p <- ggplot(gg) +
-  geom_bar(aes(factor(experiment, levels = c("201016", "200925", "200513")), Freq, fill = cluster), stat = "identity", color = "black") +
-  coord_flip() +
-  scale_y_reverse() +
-  theme_minimal()
-ggsave(plot = p, filename = "../figures/suppl_fig_X/clusters_distribution.pdf", width = 15, height = 3)
-
-```
-
-```{r qc, fig.width=14, fig.height=10}
-
-gg <- se@meta.data
-p1 <- ggplot() +
-  geom_violin(data = gg, aes(sample_id, nFeature_RNA, color = sample_id, fill = sample_id), alpha = 0.6) +
-  geom_boxplot(data = gg, aes(sample_id, nFeature_RNA, color = sample_id, fill = sample_id), alpha = 1, color = "black", width = 0.3) +
-  facet_grid(~date, scales = "free_x", space='free') +
-  theme_bw() +
-  labs(y = "unique genes", x = "") +
-  guides(fill = F, color = F)
-p2 <- ggplot() +
-  geom_violin(data = gg, aes(sample_id, nCount_RNA, color = sample_id, fill = sample_id), alpha = 0.6) +
-  geom_boxplot(data = gg, aes(sample_id, nCount_RNA, color = sample_id, fill = sample_id), alpha = 1, color = "black", width = 0.3) +
-  scale_y_continuous(breaks = c(0, 5e3, 10e3, 15e3, 20e3, 25e3)) +
-  facet_grid(~date, scales = "free_x", space='free') +
-  theme_bw() +
-  labs(y = "UMIs", x = "") +
-  guides(fill = F, color = F)
-p3 <- p1 / p2
-ggsave(plot = p3, filename = "../figures/suppl_fig_X/QC_plot.pdf", width = 16, height = 9)
-
 ```
 
 
+# date
+***
+
+```{r date}
+date()
+```
 
 
+# Session info
+***
 
+```{r session}
+sessionInfo()
+```
 
