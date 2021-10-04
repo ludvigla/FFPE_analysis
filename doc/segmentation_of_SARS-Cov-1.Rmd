@@ -13,13 +13,14 @@ library(ggplot2)
 library(cowplot)
 library(magrittr)
 library(zeallot)
-source("~/Michael_Ratz/cell_segmentation/scripts/global_functions.R")
+source("global_functions_segmentation.R")
 ```
 
 
-# Segmentation workflow
+## Segmentation
+***
 
-Apply previoulsy established segmentation workflow to uncropped and raw TIF images for each channel
+Apply simple segmentation to DAPI stain
 
 ```{r segmentation_run, fig.height=3, fig.width=6}
 
@@ -37,17 +38,32 @@ nmask = bwlabel(nmask)
 
 ```
 
-# Count cells
+## Count cells
+***
 
-
-```{r count_features, fig.height=4, fig.width=8}
+```{r count_features, fig.height=4, fig.width=12}
 cat("Total number of cells: ", max(nmask), "\n")
 
 par(mfrow = c(1, 2))
-display(cells, method = "raster")
-text(x = 10, y = 20, label = "Segmented nuclei", adj = c(0, 1), col = "orange", cex = 1.5)
-display(colorLabels(nmask), method = "raster")
-text(x = 10, y = 20, label = "Watershed labeling", adj = c(0, 1), col = "orange", cex = 1.5)
+display(cells[500:1500, 500:1500], method = "raster")
+text(x = 10, y = 20, label = "raw signal", adj = c(0, 1), col = "orange", cex = 1.5)
+display(nmask[500:1500, 500:1500], method = "raster")
+text(x = 10, y = 20, label = "segmetned nuclei", adj = c(0, 1), col = "orange", cex = 1.5)
 
 ```
+
+## Date
+***
+
+```{r}
+date()
+```
+
+## Session
+***
+
+```{r}
+sessionInfo()
+```
+
 

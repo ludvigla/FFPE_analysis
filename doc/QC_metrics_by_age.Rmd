@@ -16,15 +16,19 @@ library(STutility)
 library(Seurat)
 ```
 
-```{r load_libs}
+Organize all spaceranger output files from FFPE experiments and load them into separate
+Seurat objects.
 
-samples <- list.files(path = "~/FFPE/analysis/data/", pattern = "filtered_feature_bc_matrix.h5", recursive = T, full.names = T)
-spotfiles <- list.files(path = "~/FFPE/analysis/data/", pattern = "tissue_positions_list.csv", recursive = T, full.names = T)
-json <- list.files(path = "~/FFPE/analysis/data/", pattern = "scalefactors_json.json", recursive = T, full.names = T)
-imgs <- list.files(path = "~/FFPE/analysis/data/", pattern = "tissue_hires_image.png", recursive = T, full.names = T)
+```{r load_libs, eval=FALSE}
+
+# Make sure that only FFPE samples are included
+rmvs <- 18:24
+samples <- list.files(path = "../data", pattern = "filtered_feature_bc_matrix.h5", recursive = T, full.names = T)[setdiff(1:31, rmvs)]
+spotfiles <- list.files(path = "../data", pattern = "tissue_positions_list.csv", recursive = T, full.names = T)[setdiff(1:31, rmvs)]
+json <- list.files(path = "../data", pattern = "scalefactors_json.json", recursive = T, full.names = T)[setdiff(1:31, rmvs)]
+imgs <- list.files(path = "../data", pattern = "tissue_hires_image.png", recursive = T, full.names = T)[setdiff(1:31, rmvs)]
 
 infoTable <- data.frame(samples, imgs, spotfiles, json, stringsAsFactors = F)
-infoTable <- infoTable[-18, ]
 infoTable$date <- c("37 yrs", "18 yrs", "10 yrs", "5 yrs",
                     "6 mos", "6 mos", 
                     "1yr. 8 mos", "1yr. 8 mos", "1yr. 8 mos", "1yr. 8 mos",
@@ -40,9 +44,9 @@ se.list <- lapply(1:nrow(infoTable), function(i) {
 
 ```
 
-```{r}
+```{r calc_qc}
 
-sampleids <- do.call(rbind, strsplit(infoTable$samples, "/"))[, 9]
+sampleids <- do.call(rbind, strsplit(infoTable$samples, "/"))[, 4]
 qc.matrix <- do.call(rbind, lapply(seq_along(se.list), function(i) {
   data.frame(unique_genes = se.list[[i]]$nFeature_RNA, 
              UMIs = se.list[[i]]$nCount_RNA, 
@@ -74,7 +78,22 @@ p2 <- ggplot(qc.matrix, aes(sample, UMIs, fill = date)) +
         panel.background = element_blank(), 
         panel.grid = element_line(colour = "lightgray", linetype = "longdash")) +
   guides(fill = F)
-ggsave(plot = p1 / p2, filename = "~/FFPE/analysis/figures/suppl_figure_XXXXX/QC_metrics.pdf", width = 12, height = 7)
+p1 / p2
 
 ```
+
+## date 
+***
+
+```{r}
+date()
+```
+
+## Session
+***
+
+```{r}
+sessionInfo()
+```
+
 
